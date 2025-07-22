@@ -1,0 +1,16 @@
+
+version: '3.8' # Specifies the version of the compose file format
+
+services: # This is where we define our containers
+  
+  # We are defining a service and naming it 'redis'
+  redis:
+    image: "redis:alpine" # Use the official, lightweight Redis image from Docker Hub
+    container_name: facials-redis # A friendly name for our container
+    hostname: redis # This allows other services to find it by the name 'redis'
+    ports:
+      - "6379:6379" # This is the crucial part:
+                    # It maps port 6379 on your computer (the first number)
+                    # to port 6379 inside the Docker container (the second number).
+                    # This allows your Django app (running on your machine) to talk to Redis (running in Docker).
+    restart: always # Optional: ensures Redis automatically restarts if it ever crashes

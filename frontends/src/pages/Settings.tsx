@@ -1,4 +1,4 @@
-// facials/front/src/pages/Settings.tsx
+// facials/frontends/src/pages/Settings.tsx
 
 import Layout from "@/components/Layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,6 +10,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Switch } from "@/components/ui/switch";
 import { User, Mail, Phone, Camera, Bell, Shield, Save, Loader2 } from "lucide-react"; // Added Loader2
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useState, useEffect, useRef } from "react"; // Added useEffect, useRef
 import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"; // Added React Query hooks
@@ -21,14 +22,15 @@ interface ProfileFormState {
     firstName: string;
     lastName: string;
     email: string;
+    department: string;
+    faculty: string;
     phone: string; 
     bio: string; 
     avatar: string | null; 
 }
 
-// const { toast } = useToast();
-
 const Settings = () => {
+  const { toast } = useToast();
   const queryClient = useQueryClient(); // Initialize query client for invalidation
 
   // Use React Query to fetch the current user's profile data
@@ -53,8 +55,10 @@ const Settings = () => {
         firstName: userData.first_name || "", // Use backend field names
         lastName: userData.last_name || "",   // Use backend field names
         email: userData.email || "",         // Use backend field names
-        phone: "", // Keep local state for fields not in backend, initialize empty
-        bio: "",   // Keep local state for fields not in backend, initialize empty
+        phone: userData.phone ||  "", // Keep local state for fields not in backend, initialize empty
+        bio: userData.bio || "",   // Keep local state for fields not in backend, initialize empty
+        department: userData.department || "",
+        faculty:  userData.faculty || "",
         avatar: userData.profile_picture || null, // Use backend field name
       });
        // Optional: If you want to store phone/bio locally even if not in backend API response
@@ -147,6 +151,10 @@ const Settings = () => {
               first_name: profileForm.firstName,
               last_name: profileForm.lastName,
               email: profileForm.email,
+              bio: profileForm.bio,
+              department: profileForm.department,
+              phone: profileForm.phone,
+              faculty: profileForm.faculty,
               // phone and bio are not sent to the backend without backend changes
           };
           // Call the mutation to save profile
@@ -165,6 +173,10 @@ const Settings = () => {
      // Example of a settings mutation call (requires backend endpoint and mutation setup)
      // saveSettingsMutation.mutate(settings);
   };
+
+  const handleSelectChange = (name: string, value: string) => {
+    setProfileForm({ ...profileForm, [name]: value });
+};
 
    // File input ref for photo upload
    const fileInputRef = useRef<HTMLInputElement>(null);
@@ -240,6 +252,14 @@ const Settings = () => {
            </Layout>
        );
    }
+
+   const facultyOptions = [
+    { value: 'School of Engineering', label: 'School of Engineering' },
+    { value: 'School ofScience', label: 'School ofScience' },
+    { value: 'arts', label: 'Arts' },
+    { value: 'medicine', label: 'Medicine' },
+    // Add more faculties here
+];
 
   // Once data is loaded and profileForm is initialized, render the form
   return (
@@ -355,6 +375,36 @@ const Settings = () => {
                   className="bg-white/50 border-forest-200 focus:border-forest-400"
                 />
               </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                    <Label htmlFor="faculty" className="text-forest-600">Faculty</Label>
+                    <Select
+                       name="faculty" // Name attribute matches state key
+                       value={profileForm.faculty}
+                       onValueChange={(value) => handleSelectChange('faculty', value)} // Use handleSelectChange
+                    >
+                      <SelectTrigger className="bg-white/10 border-dark/20 text-dark placeholder:text-forest-300">
+                        <SelectValue placeholder="Select Faculty" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {facultyOptions.map(option => (
+                           <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                </div>
+                 <div className="space-y-2">
+                    <Label htmlFor="department" className="text-forest-600">Department</Label>
+                    <Input
+                      id="department"
+                      name="department" // Name attribute matches state key
+                      placeholder="Computer Science"
+                      value={profileForm.department}
+                      onChange={(e) => handleProfileFormChange('department', e.target.value)}
+                      className="bg-white/10 border-dark/20 text-dark placeholder:text-forest-300"
+                    />
+                </div>
+             </div>
 
               {/* Bio Field (local state only - requires backend changes to save) */}
               <div className="space-y-2">

@@ -7,12 +7,12 @@ import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Search, Users, Plus, Mail, Edit, Trash2, Loader2, GraduationCap } from "lucide-react";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 
 // --- PROFESSIONAL STACK IMPORTS ---
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import api from "@/lib/api"; // Your centralized API service
+import { getStudents } from "@/lib/api"; 
 import { BackendStudent } from "@/types/backend"
 import { useToast } from "@/hooks/use-toast";
 
@@ -33,15 +33,18 @@ const Students = () => {
   // 1. DATA FETCHING: Replaced useState/useEffect with useQuery
   // This hook now manages fetching, caching, loading, and error states for the student list.
   // ====================================================================
-  const { data: students, isLoading, isError, error } = useQuery<BackendStudent[]>({
+
+
+  const { data: students, isLoading, isError, error, refetch } = useQuery<BackendStudent[]>({
     queryKey: ['students'], // A unique key for React Query to cache this data
-    queryFn: async () => {
-      const url = `/students/?timestamp=${new Date().getTime()}`;
-      console.log("STUDENTS PAGE: Re-fetching students now...");
-      const response = await api.get(url);
-      console.log("DATA FROM REFETCH:", response.data); 
-      return response.data;
-    },
+    queryFn: getStudents,
+    // queryFn: async () => {
+    //   const url = `/students/?timestamp=${new Date().getTime()}`;
+    //   console.log("STUDENTS PAGE: Re-fetching students now...");
+    //   const response = await api.get(url);
+    //   console.log("DATA FROM REFETCH:", response.data); 
+    //   return response.data;
+    // },
     staleTime: 1000 * 60 * 5, // Consider data fresh for 5 minutes
   });
 
@@ -73,6 +76,7 @@ const Students = () => {
       // Filter using backend field names
       `${s.first_name} ${s.last_name}`.toLowerCase().includes(searchTerm.toLowerCase()) ||
       s.student_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      s.level.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (s.email && s.email.toLowerCase().includes(searchTerm.toLowerCase()))
     );
   }, [students, searchTerm]);

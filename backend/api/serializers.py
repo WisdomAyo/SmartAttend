@@ -11,28 +11,38 @@ User = get_user_model()
 from djoser.serializers import UserCreateSerializer as DjoserBaseUserCreateSerializer
 
 class UserSerializer(serializers.ModelSerializer):
-     # Add custom fields here if they exist in your User model but not Djoser's default
-     phone = serializers.CharField(read_only=True) # Example if you added phone
-     bio = serializers.CharField(read_only=True)   # Example if you added bio
-     department = serializers.CharField(read_only=True)
-     faculty = serializers.CharField(read_only=True)
+    phone = serializers.CharField(required=False, allow_blank=True)
+    bio = serializers.CharField(required=False, allow_blank=True)
+    faculty = serializers.CharField(required=False, allow_blank=True)
+    department = serializers.CharField(required=False, allow_blank=True)
 
-     class Meta:
+    class Meta:
          model = User # Or settings.AUTH_USER_MODEL
          fields = (
              'id',
              'email',
              'first_name',
              'last_name',
-             'username',
              'bio',
              'phone',
              'faculty',
              'department',
-             'profile_picture', # Ensure this field is included if you added it
-             # Add other fields you want to expose
+             'profile_picture', 
+             'last_login'
          )
-         read_only_fields = ('email','username') # Make email read-only if Djoser handles its changes
+         read_only_fields = ("email", "last_login") # Make email read-only if Djoser handles its changes
+         
+def update(self, instance, validated_data):
+        # Assign each field manually
+        instance.first_name = validated_data.get('first_name', instance.first_name)
+        instance.last_name = validated_data.get('last_name', instance.last_name)
+        instance.bio = validated_data.get('bio', instance.bio)
+        instance.phone = validated_data.get('phone', instance.phone)
+        instance.faculty = validated_data.get('faculty', instance.faculty)
+        instance.department = validated_data.get('department', instance.department)
+
+        instance.save()
+        return instance         
          
 def get_user_full_name(obj):
     return f"{obj.first_name or ''} {obj.last_name or ''}".strip() or obj.email
@@ -55,7 +65,7 @@ class UserCreateSerializer(DjoserBaseUserCreateSerializer):
         fields = DjoserBaseUserCreateSerializer.Meta.fields + ('email','password','re_password','first_name', 'last_name', 'faculty', 'department') # Include first_name, last_name, and username
 
     # *** Override the create method to handle username ***
-    def perform_create(self, validated_data):
+    def create(self, validated_data):
         # Auto-generate a unique username from email part + UUID
         # This ensures 'username' is always populated and unique if required by the model
         email_part = validated_data['email'].split('@')[0]
@@ -147,7 +157,7 @@ class StudentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Student
         # Include all fields for the main student list/detail
-        fields = ['id', 'student_id', 'first_name', 'last_name', 'email', 'phone', 'level', 'profile_photo', 'has_face_enrolled', 'courses']
+        fields = ['id', 'student_id', 'first_name', 'last_name', 'email', 'phone', 'level', 'department', 'profile_photo', 'has_face_enrolled', 'courses']
 
 
     def get_has_face_enrolled(self, obj):

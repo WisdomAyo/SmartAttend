@@ -65,7 +65,7 @@ class UserViewSet(DjoserUserViewSet):
     # *** ADD THIS ACTION FOR PROFILE PHOTO UPLOAD ***
     # This action will be available at the detail route (which is '/me/' for the authenticated user)
     # So the URL will be like /users/me/upload_photo/ if using Djoser's router correctly
-    @action(detail=True, methods=['post'], url_path='upload_photo', permission_classes=[IsAuthenticated])
+    @action(detail=False, methods=['post'], url_path='me/upload_photo', permission_classes=[IsAuthenticated])
     def upload_photo(self, request, *args, **kwargs):
         """
         Uploads a profile picture for the currently authenticated user.
@@ -74,6 +74,7 @@ class UserViewSet(DjoserUserViewSet):
         """
         # detail=True on /me/ should make self.get_object() return the current user
         user = self.get_object()
+        user = request.user
 
         # Double check the user to be safe
         if user != request.user:
@@ -639,8 +640,10 @@ class StudentViewSet(viewsets.ModelViewSet):
         """
         Filters students to only show those enrolled in courses taught by the logged-in user.
         """
-        return Student.objects.filter(courses__teacher=self.request.user).distinct()
+        return Student.objects.filter(created_by=self.request.user).distinct()
 
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
 
     @action(detail=True, methods=['post'], url_path='enroll-face')
     def enroll_face(self, request, pk=None):
@@ -651,8 +654,8 @@ class StudentViewSet(viewsets.ModelViewSet):
         """
         student = self.get_object()
 
-        if not student.courses.filter(teacher=request.user).exists():
-             return Response({"error": "You do not have permission to enroll face for this student."}, status=status.HTTP_403_FORBIDDEN)
+        if  student.created_by != request.user:
+             return Response({"error": "You can now upload images for student you created."}, status=status.HTTP_403_FORBIDDEN)
 
 
         base64_image = request.data.get('image')

@@ -7,9 +7,13 @@
 
 export interface BackendUser {
   id: number;
-  email: string;
   first_name: string;
   last_name: string;
+  email: string;
+  department: string;
+  faculty: string;
+  phone: string; 
+  bio: string; 
   profile_picture?: string | null;
 
 

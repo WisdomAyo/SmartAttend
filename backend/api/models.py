@@ -1,5 +1,5 @@
 from django.db import models
-from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.models import AbstractUser, BaseUserManager, PermissionsMixin
 from django.conf import settings # Needed for User foreign key if not using get_user_model
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _ # Good practice for field names
@@ -7,15 +7,32 @@ from .managers import CustomUserManager
 
 
 
+class CustomUserManager(BaseUserManager):
+    def create_user(self, email, password=None, **extra_fields):
+        if not email:
+            raise ValueError(_("The Email field must be set"))
+        email = self.normalize_email(email)
+        extra_fields.setdefault('is_active', True)
+        user = self.model(email=email, **extra_fields)
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
 
-# SESSION: USER AND COURSE MANAGEMENT
-# We create a custom User model to potentially add more fields later, like a profile picture.
-# It's good practice to start with a custom user model.
+    def create_superuser(self, email, password=None, **extra_fields):
+        extra_fields.setdefault('is_staff', True)
+        extra_fields.setdefault('is_superuser', True)
+        return self.create_user(email, password, **extra_fields)
+
+
+
+
+
+
 class User(AbstractUser):
     email = models.EmailField(_("email address"), unique=True)
     
     USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = ['first_name', 'last_name'] # Require names during creation
+    REQUIRED_FIELDS = ['first_name', 'last_name', 'department', 'faculty'] # Require names during creation
     
     username = None
     first_name = models.CharField(_("first name"), max_length=150, blank=False, null=False) # Assuming required
@@ -26,6 +43,10 @@ class User(AbstractUser):
     department = models.CharField(_("department"), max_length=100, blank=True, null=True) # CharField
     faculty = models.CharField(_("faculty"), max_length=100, blank=True, null=True) # CharField
     phone = models.CharField(_("phone number"), max_length=20, blank=True, null=True) # CharField
+    
+    is_active = models.BooleanField(default=True)
+    is_staff = models.BooleanField(default=False)
+    data_joined=models.DateTimeField(default=timezone.now)
     
     objects = CustomUserManager()
     
@@ -68,6 +89,7 @@ class Student(models.Model):
     courses = models.ManyToManyField(Course, related_name='students', blank=True)
     level = models.CharField(max_length=10, null=True, blank=True, help_text="e.g., 100L, 200L, 300L")
     phone = models.CharField(max_length=20, null=True, blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True,  related_name='created_students')
     
 
     def __str__(self):

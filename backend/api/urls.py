@@ -10,7 +10,7 @@ from .views import CourseViewSet, StudentViewSet, DashboardDataView, UserViewSet
 router = DefaultRouter()
 router.register(r'courses', CourseViewSet, basename='course')
 router.register(r'students', StudentViewSet, basename='student')
-router.register(r'users', UserViewSet, basename='user')
+router.register(r'auth/users', UserViewSet, basename='user')
 
 # The API URLs are now determined automatically by the router.
 urlpatterns = [

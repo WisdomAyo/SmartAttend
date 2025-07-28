@@ -66,7 +66,7 @@ const Login = () => { // Removed { setIsAuthenticated } from props
 
     } catch (error) {
       // *** Handle Login Errors ***
-      console.error("Login failed:", error.response.data || error);
+      console.error("Login failed:", error instanceof Error ? error.message : error);
       
       const errorData = error.response?.data;
       let errorMessage = "Login failed. Invalid credentials or server error.";

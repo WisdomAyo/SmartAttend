@@ -20,7 +20,13 @@ import { BackendCourse, BackendStudent } from "@/types/backend";
 // --- CONSTANTS ---
 const WEBSOCKET_RECONNECT_ATTEMPTS = 5;
 const WEBSOCKET_RECONNECT_INTERVAL = 3000;
-const FRAME_SEND_INTERVAL = 750; // Send a frame every 750ms for real-time processing
+const FRAME_SEND_INTERVAL = 500; // Send a frame every 750ms for real-time processing
+
+type FaceBox = {
+  box: { source_x: number; source_y: number; source_w: number; source_h: number; };
+  name: string;
+  status: 'confirmed' | 'sighted' | 'unknown';
+};
 
 const TakeAttendance = () => {
   // --- Your Original State Management ---
@@ -29,10 +35,15 @@ const TakeAttendance = () => {
   
   // --- State for Live Data ---
   const [presentStudentIds, setPresentStudentIds] = useState<Set<number>>(new Set());
+
+  const [faceBoxes, setFaceBoxes] = useState<FaceBox[]>([]);
+
+  const [annotatedFrame, setAnnotatedFrame] = useState<string | null>(null);
   
   // --- Your Original Refs ---
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null); // This is for drawing overlays
   const intervalRef = useRef<NodeJS.Timeout | null>(null); // To manage the streaming interval
   
   const { toast } = useToast();
@@ -71,15 +82,85 @@ const socketUrl = selectedCourseId && token
   useEffect(() => {
     if (lastMessage !== null) {
       const messageData = JSON.parse(lastMessage.data);
-      if (messageData.type === 'match_found') {
-        setPresentStudentIds(prev => new Set(prev).add(messageData.student_id));
-        toast({
-          title: "Student Recognized!",
-          description: `${messageData.student_name} has been marked present.`,
-        });
+
+      if (messageData.type === 'face_data') {
+        // 1. Set the annotated image to be displayed
+        setFaceBoxes(messageData.faces); 
+
+        // 2. Process any newly recognized students from this frame
+        if (messageData.newly_recognized && messageData.newly_recognized.length > 0) {
+          const newIds = messageData.newly_recognized.map((s: { id: number; name: string }) => s.id);
+          setPresentStudentIds(prev => new Set([...Array.from(prev), ...newIds]));
+          
+          // 3. Show a toast for each new student found
+          messageData.newly_recognized.forEach((student: { id: number; name: string }) => {
+            toast({
+              title: "Student Recognized!",
+              description: `${student.name} has been marked present.`,
+            });
+          });
+        }
+      } else if (messageData.type === 'session_ready') {
+          toast({ title: "Session is ready", description: "You can now start the capture." });
+      } else if (messageData.type === 'error') {
+          toast({ title: "Session Error", description: messageData.message, variant: "destructive" });
       }
     }
   }, [lastMessage, toast]);
+
+  
+  useEffect(() => {
+    const video = videoRef.current;
+    const canvas = overlayCanvasRef.current;
+    if (!video || !canvas || !faceBoxes) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Match canvas size to the video element size to draw correctly
+    canvas.width = video.clientWidth;
+    canvas.height = video.clientHeight;
+
+    // Clear the previous drawings
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const scaleX = canvas.width / 320;   // The width of the frame sent to backend
+    const scaleY = canvas.height / 240;  // The height of the frame sent to backend
+
+    faceBoxes.forEach(face => {
+      const { source_x, source_y, source_w, source_h } = face.box;
+      
+      // Scale coordinates to fit the display
+      const x = source_x * scaleX;
+      const y = source_y * scaleY;
+      const w = source_w * scaleX;
+      const h = source_h * scaleY;
+
+      // Set styles based on status
+      let color, text;
+      switch(face.status) {
+        case 'confirmed': color = '#22c55e'; text = face.name; break;       // Green
+        case 'sighted':   color = '#facc15'; text = `${face.name}?`; break; // Yellow
+        default:          color = '#ef4444'; text = face.name; break;       // Red
+      }
+      
+      // Draw the box
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x, y, w, h);
+
+      // Draw the text background
+      ctx.fillStyle = color;
+      ctx.font = '16px sans-serif';
+      const textWidth = ctx.measureText(text).width;
+      ctx.fillRect(x, y - 22, textWidth + 10, 22);
+
+      // Draw the text
+      ctx.fillStyle = '#000000';
+      ctx.fillText(text, x + 5, y - 5);
+    });
+  }, [faceBoxes]);
+
 
   // --- CAMERA & STREAMING LOGIC ---
   const sendFrame = useCallback(() => {
@@ -100,6 +181,7 @@ const socketUrl = selectedCourseId && token
   // This replaces your old 'startCapture'
   const startCapture = async () => {
     setPresentStudentIds(new Set());
+    setFaceBoxes([]); 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
       if (videoRef.current) {
@@ -120,6 +202,7 @@ const socketUrl = selectedCourseId && token
       (videoRef.current.srcObject as MediaStream).getTracks().forEach(track => track.stop());
     }
     setIsCapturing(false);
+    setAnnotatedFrame(null);
     toast({ title: "Session ended" });
   };
 
@@ -232,7 +315,11 @@ const socketUrl = selectedCourseId && token
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="relative aspect-video bg-forest-900 rounded-xl overflow-hidden">
-                  <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                  <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" style={{ display: annotatedFrame ? 'none' : 'block' }} />
+                  {annotatedFrame && (
+                   <canvas ref={overlayCanvasRef} className="absolute top-0 left-0 w-full h-full" />
+                  )}
+
                   {!isCapturing && (
                     <div className="absolute inset-0 flex items-center justify-center bg-forest-900/80">
                       <div className="text-center text-white">

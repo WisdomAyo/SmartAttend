@@ -20,7 +20,7 @@ import { BackendCourse, BackendStudent } from "@/types/backend";
 // --- CONSTANTS ---
 const WEBSOCKET_RECONNECT_ATTEMPTS = 5;
 const WEBSOCKET_RECONNECT_INTERVAL = 3000;
-const FRAME_SEND_INTERVAL = 500; // Send a frame every 750ms for real-time processing
+const FRAME_SEND_INTERVAL = 500; // Send a frame every 500ms for real-time processing
 
 type FaceBox = {
   box: { source_x: number; source_y: number; source_w: number; source_h: number; };
@@ -29,100 +29,122 @@ type FaceBox = {
 };
 
 const TakeAttendance = () => {
-  // --- Your Original State Management ---
+  // --- State Management ---
   const [selectedCourseId, setSelectedCourseId] = useState("");
-  const [isCapturing, setIsCapturing] = useState(false); // This will now mean "Session is Active"
-  
-  // --- State for Live Data ---
+  const [isCapturing, setIsCapturing] = useState(false);
   const [presentStudentIds, setPresentStudentIds] = useState<Set<number>>(new Set());
-
   const [faceBoxes, setFaceBoxes] = useState<FaceBox[]>([]);
-
   const [annotatedFrame, setAnnotatedFrame] = useState<string | null>(null);
   
-  // --- Your Original Refs ---
+  // --- Refs ---
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const overlayCanvasRef = useRef<HTMLCanvasElement>(null); // This is for drawing overlays
-  const intervalRef = useRef<NodeJS.Timeout | null>(null); // To manage the streaming interval
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
   
   const { toast } = useToast();
 
   // ====================================================================
-  // 1. DATA FETCHING (LOGIC ONLY)
+  // 1. DATA FETCHING
   // ====================================================================
   const { data: courses, isLoading: isLoadingCourses } = useQuery<BackendCourse[]>({
     queryKey: ['coursesForAttendance'],
-    queryFn: async () => (await api.get('/courses/')).data,
+    queryFn: async () => {
+      try {
+        const response = await api.get('/courses/');
+        return response.data;
+      } catch (error) {
+        console.error('Error fetching courses:', error);
+        throw error;
+      }
+    },
   });
 
   const { data: courseData, isLoading: isLoadingStudents } = useQuery<BackendCourse>({
     queryKey: ['courseDetailForAttendance', selectedCourseId],
-    queryFn: async () => (await api.get(`/courses/${selectedCourseId}/`)).data,
+    queryFn: async () => {
+      try {
+        const response = await api.get(`/courses/${selectedCourseId}/`);
+        return response.data;
+      } catch (error) {
+        console.error('Error fetching course details:', error);
+        throw error;
+      }
+    },
     enabled: !!selectedCourseId,
   });
 
   // ====================================================================
-  // 2. WEBSOCKET LOGIC (The Core Functionality)
+  // 2. WEBSOCKET LOGIC
   // ====================================================================
-  const token = localStorage.getItem('access_token');
+  const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null;
 
-// Append the token to the URL as a query parameter
-const socketUrl = selectedCourseId && token 
-  ? `ws://127.0.0.1:8000/ws/attendance/${selectedCourseId}/?token=${token}` 
-  : null;
+  const socketUrl = selectedCourseId && token 
+    ? `ws://127.0.0.1:8000/ws/attendance/${selectedCourseId}/?token=${token}` 
+    : null;
 
   const { sendMessage, lastMessage, readyState } = useWebSocket(socketUrl, {
     shouldReconnect: () => true,
     reconnectAttempts: WEBSOCKET_RECONNECT_ATTEMPTS,
     reconnectInterval: WEBSOCKET_RECONNECT_INTERVAL,
-    onOpen: () => console.log("WebSocket connection established."),
+    onOpen: () => {
+      console.log("WebSocket connection established.");
+      toast({ title: "Connected", description: "WebSocket connection established." });
+    },
+    onError: (error) => {
+      console.error("WebSocket error:", error);
+      toast({ title: "Connection Error", description: "Failed to connect to server.", variant: "destructive" });
+    },
   });
 
+  // Handle WebSocket messages
   useEffect(() => {
     if (lastMessage !== null) {
-      const messageData = JSON.parse(lastMessage.data);
+      try {
+        const messageData = JSON.parse(lastMessage.data);
 
-      if (messageData.type === 'face_data') {
-        // 1. Set the annotated image to be displayed
-        setFaceBoxes(messageData.faces); 
+        if (messageData.type === 'face_data') {
+          setFaceBoxes(messageData.faces || []); 
 
-        // 2. Process any newly recognized students from this frame
-        if (messageData.newly_recognized && messageData.newly_recognized.length > 0) {
-          const newIds = messageData.newly_recognized.map((s: { id: number; name: string }) => s.id);
-          setPresentStudentIds(prev => new Set([...Array.from(prev), ...newIds]));
-          
-          // 3. Show a toast for each new student found
-          messageData.newly_recognized.forEach((student: { id: number; name: string }) => {
-            toast({
-              title: "Student Recognized!",
-              description: `${student.name} has been marked present.`,
+          if (messageData.newly_recognized && messageData.newly_recognized.length > 0) {
+            const newIds = messageData.newly_recognized.map((s: { id: number; name: string }) => s.id);
+            setPresentStudentIds(prev => new Set([...Array.from(prev), ...newIds]));
+            
+            messageData.newly_recognized.forEach((student: { id: number; name: string }) => {
+              toast({
+                title: "Student Recognized!",
+                description: `${student.name} has been marked present.`,
+              });
             });
-          });
-        }
-      } else if (messageData.type === 'session_ready') {
+          }
+        } else if (messageData.type === 'session_ready') {
           toast({ title: "Session is ready", description: "You can now start the capture." });
-      } else if (messageData.type === 'error') {
+        } else if (messageData.type === 'error') {
           toast({ title: "Session Error", description: messageData.message, variant: "destructive" });
+        }
+      } catch (error) {
+        console.error('Error parsing WebSocket message:', error);
       }
     }
   }, [lastMessage, toast]);
 
-  
+  // Draw face boxes overlay
   useEffect(() => {
     const video = videoRef.current;
     const canvas = overlayCanvasRef.current;
-    if (!video || !canvas || !faceBoxes) return;
+    if (!video || !canvas) return;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Match canvas size to the video element size to draw correctly
+    // Match canvas size to the video element size
     canvas.width = video.clientWidth;
     canvas.height = video.clientHeight;
 
-    // Clear the previous drawings
+    // Clear previous drawings
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (!faceBoxes || faceBoxes.length === 0) return;
 
     const scaleX = canvas.width / 320;   // The width of the frame sent to backend
     const scaleY = canvas.height / 240;  // The height of the frame sent to backend
@@ -139,9 +161,18 @@ const socketUrl = selectedCourseId && token
       // Set styles based on status
       let color, text;
       switch(face.status) {
-        case 'confirmed': color = '#22c55e'; text = face.name; break;       // Green
-        case 'sighted':   color = '#facc15'; text = `${face.name}?`; break; // Yellow
-        default:          color = '#ef4444'; text = face.name; break;       // Red
+        case 'confirmed': 
+          color = '#22c55e'; 
+          text = face.name; 
+          break;
+        case 'sighted':   
+          color = '#facc15'; 
+          text = `${face.name}?`; 
+          break;
+        default:          
+          color = '#ef4444'; 
+          text = face.name || 'Unknown'; 
+          break;
       }
       
       // Draw the box
@@ -161,7 +192,6 @@ const socketUrl = selectedCourseId && token
     });
   }, [faceBoxes]);
 
-
   // --- CAMERA & STREAMING LOGIC ---
   const sendFrame = useCallback(() => {
     if (videoRef.current && canvasRef.current && readyState === ReadyState.OPEN) {
@@ -178,49 +208,108 @@ const socketUrl = selectedCourseId && token
     }
   }, [readyState, sendMessage]);
   
-  // This replaces your old 'startCapture'
   const startCapture = async () => {
     setPresentStudentIds(new Set());
     setFaceBoxes([]); 
+    setAnnotatedFrame(null);
+    
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: 'user' } 
+      });
+      
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        setIsCapturing(true); // Your original state for REC badge
+        setIsCapturing(true);
         intervalRef.current = setInterval(sendFrame, FRAME_SEND_INTERVAL);
-        toast({ title: "Real-time session started", description: "Pan the camera around the classroom." });
+        toast({ 
+          title: "Real-time session started", 
+          description: "Pan the camera around the classroom." 
+        });
       }
     } catch (error) {
-      toast({ title: "Camera access denied", variant: "destructive" });
+      console.error('Camera access error:', error);
+      toast({ 
+        title: "Camera access denied", 
+        description: "Please allow camera access to continue.",
+        variant: "destructive" 
+      });
     }
   };
 
-  // This replaces your old 'stopCapture'
   const stopCapture = () => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    if (videoRef.current?.srcObject) {
-      (videoRef.current.srcObject as MediaStream).getTracks().forEach(track => track.stop());
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
     }
+    
+    if (videoRef.current?.srcObject) {
+      const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
+      tracks.forEach(track => track.stop());
+      videoRef.current.srcObject = null;
+    }
+    
     setIsCapturing(false);
     setAnnotatedFrame(null);
+    setFaceBoxes([]);
     toast({ title: "Session ended" });
   };
 
-  // --- EXCEL EXPORT LOGIC (UNCHANGED) ---
-  const exportToExcel = async () => { /* ... your existing export logic using api.get ... */ };
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
+      if (videoRef.current?.srcObject) {
+        const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
+        tracks.forEach(track => track.stop());
+      }
+    };
+  }, []);
 
-  // --- DERIVED DATA FOR UI (UNCHANGED) ---
+  // --- EXCEL EXPORT LOGIC ---
+  const exportToExcel = async () => {
+    if (!selectedCourseId) return;
+    
+    try {
+      const response = await api.get(`/courses/${selectedCourseId}/export-attendance/`, {
+        responseType: 'blob'
+      });
+      
+      const blob = new Blob([response.data], { 
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+      });
+      
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `attendance-${selectedCourseData?.name || 'course'}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      
+      toast({ title: "Export successful", description: "Attendance data exported to Excel." });
+    } catch (error) {
+      console.error('Export error:', error);
+      toast({ 
+        title: "Export failed", 
+        description: "Could not export attendance data.",
+        variant: "destructive" 
+      });
+    }
+  };
+
+  // --- DERIVED DATA FOR UI ---
   const selectedCourseData = courses?.find(c => c.id.toString() === selectedCourseId);
   const students = courseData?.students || [];
 
   return (
     <Layout>
-      {/* Hidden canvas - No visual change */}
+      {/* Hidden canvas */}
       <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
       
-      {/* ==================================================================== */}
-      {/* YOUR EXACT UI AND JSX - NO MANIPULATION */}
-      {/* ==================================================================== */}
       <div className="p-6 space-y-8">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-4">
@@ -231,18 +320,27 @@ const socketUrl = selectedCourseId && token
             </div>
           </div>
           {students.length > 0 && (
-            <Button onClick={exportToExcel} className="btn-secondary animate-slide-in-right" disabled={!selectedCourseId}>
+            <Button 
+              onClick={exportToExcel} 
+              className="btn-secondary animate-slide-in-right" 
+              disabled={!selectedCourseId}
+            >
               <Download className="w-4 h-4 mr-2" />
               Export to Excel
             </Button>
           )}
         </div>
 
-        {/* Enhanced Course Selection with Graphics */}
+        {/* Course Selection */}
         <Card className="glass-card animate-fade-in-up relative overflow-hidden">
-          {/* ... all your decorative divs ... */}
           <CardHeader>
-            {/* ... your CardHeader JSX ... */}
+            <CardTitle className="flex items-center space-x-2 text-forest-900">
+              <BookOpen className="w-5 h-5" />
+              <span>Select Course</span>
+            </CardTitle>
+            <CardDescription className="text-forest-600">
+              Choose the course for attendance tracking
+            </CardDescription>
           </CardHeader>
           <CardContent className="relative">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -264,6 +362,7 @@ const socketUrl = selectedCourseId && token
                     ))}
                   </SelectContent>
                 </Select>
+                
                 {selectedCourseData && (
                   <div className="p-4 bg-forest-50 rounded-lg space-y-2 animate-fade-in-up">
                     <h3 className="font-semibold text-forest-900">{selectedCourseData.name}</h3>
@@ -280,7 +379,8 @@ const socketUrl = selectedCourseId && token
                   </div>
                 )}
               </div>
-              {/* ... your animated graphics div ... */}
+              
+              {/* Animated Graphics */}
               <div className="hidden lg:flex items-center justify-center relative">
                 <div className="relative w-48 h-48">
                   <div className="absolute inset-0 bg-forest-gradient rounded-full opacity-20 animate-pulse"></div>
@@ -295,7 +395,6 @@ const socketUrl = selectedCourseId && token
                   <div className="absolute -bottom-2 right-12 w-3 h-3 bg-forest-400 rounded-full animate-pulse" style={{ animationDelay: '1.5s' }}></div>
                 </div>
               </div>
-
             </div>
           </CardContent>
         </Card>
@@ -308,6 +407,18 @@ const socketUrl = selectedCourseId && token
                 <CardTitle className="flex items-center space-x-2 text-forest-900">
                   <Camera className="w-5 h-5" />
                   <span>Face Recognition Camera</span>
+                  {readyState === ReadyState.OPEN && (
+                    <Badge className="bg-green-100 text-green-800">
+                      <Wifi className="w-3 h-3 mr-1" />
+                      Connected
+                    </Badge>
+                  )}
+                  {readyState !== ReadyState.OPEN && (
+                    <Badge className="bg-red-100 text-red-800">
+                      <WifiOff className="w-3 h-3 mr-1" />
+                      Disconnected
+                    </Badge>
+                  )}
                 </CardTitle>
                 <CardDescription className="text-forest-600">
                   Point the camera at students for automatic attendance marking
@@ -315,10 +426,17 @@ const socketUrl = selectedCourseId && token
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="relative aspect-video bg-forest-900 rounded-xl overflow-hidden">
-                  <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" style={{ display: annotatedFrame ? 'none' : 'block' }} />
-                  {annotatedFrame && (
-                   <canvas ref={overlayCanvasRef} className="absolute top-0 left-0 w-full h-full" />
-                  )}
+                  <video 
+                    ref={videoRef} 
+                    autoPlay 
+                    playsInline 
+                    muted 
+                    className="w-full h-full object-cover" 
+                  />
+                  <canvas 
+                    ref={overlayCanvasRef} 
+                    className="absolute top-0 left-0 w-full h-full pointer-events-none" 
+                  />
 
                   {!isCapturing && (
                     <div className="absolute inset-0 flex items-center justify-center bg-forest-900/80">
@@ -329,6 +447,7 @@ const socketUrl = selectedCourseId && token
                       </div>
                     </div>
                   )}
+                  
                   {isCapturing && (
                     <div className="absolute top-4 left-4">
                       <Badge className="bg-red-500 text-white animate-pulse">● REC</Badge>
@@ -336,15 +455,21 @@ const socketUrl = selectedCourseId && token
                   )}
                 </div>
                 
-                {/* BUTTON LOGIC: Swaps between Start and Stop */}
                 <div className="flex space-x-4">
                   {!isCapturing ? (
-                    <Button onClick={startCapture} className="flex-1 btn-primary" disabled={!selectedCourseId || readyState !== ReadyState.OPEN}>
+                    <Button 
+                      onClick={startCapture} 
+                      className="flex-1 btn-primary" 
+                      disabled={!selectedCourseId || readyState !== ReadyState.OPEN}
+                    >
                       <Play className="w-4 h-4 mr-2" />
                       Start Capture
                     </Button>
                   ) : (
-                    <Button onClick={stopCapture} className="flex-1 bg-red-500 hover:bg-red-600 text-white">
+                    <Button 
+                      onClick={stopCapture} 
+                      className="flex-1 bg-red-500 hover:bg-red-600 text-white"
+                    >
                       <Square className="w-4 h-4 mr-2" />
                       Stop Capture
                     </Button>
@@ -369,7 +494,7 @@ const socketUrl = selectedCourseId && token
                     <p className="text-xs text-forest-600">Present</p>
                   </div>
                   <div className="text-center">
-                    <div className="text-2xl font-bold text-red-600">{(students.length) - presentStudentIds.size}</div>
+                    <div className="text-2xl font-bold text-red-600">{students.length - presentStudentIds.size}</div>
                     <p className="text-xs text-forest-600">Absent</p>
                   </div>
                   <div className="text-center">
@@ -379,20 +504,31 @@ const socketUrl = selectedCourseId && token
                 </div>
 
                 <div className="space-y-3 max-h-80 overflow-y-auto">
-                  {/* UI updates based on live data */}
                   {isLoadingStudents ? (
-                    <div className="text-center p-4 text-gray-500">Loading students...</div>
+                    <div className="text-center p-4 text-gray-500 flex items-center justify-center">
+                      <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                      Loading students...
+                    </div>
                   ) : (
                     students.map((student) => {
                       const isPresent = presentStudentIds.has(student.id);
                       return (
-                        <div key={student.id} className={`flex items-center space-x-3 p-3 rounded-lg transition-colors duration-300 ${isPresent ? 'bg-green-100' : 'bg-white/50 hover:bg-white/70'}`}>
+                        <div 
+                          key={student.id} 
+                          className={`flex items-center space-x-3 p-3 rounded-lg transition-colors duration-300 ${
+                            isPresent ? 'bg-green-100' : 'bg-white/50 hover:bg-white/70'
+                          }`}
+                        >
                           <Avatar className="w-10 h-10">
                             <AvatarImage src={student.profile_photo || undefined} />
-                            <AvatarFallback className="bg-forest-gradient text-white">{student.first_name?.[0]}{student.last_name?.[0]}</AvatarFallback>
+                            <AvatarFallback className="bg-forest-gradient text-white">
+                              {student.first_name?.[0]}{student.last_name?.[0]}
+                            </AvatarFallback>
                           </Avatar>
                           <div className="flex-1">
-                            <p className="font-medium text-forest-900">{student.first_name} {student.last_name}</p>
+                            <p className="font-medium text-forest-900">
+                              {student.first_name} {student.last_name}
+                            </p>
                           </div>
                           <Badge className={isPresent ? "bg-green-200 text-green-800" : "bg-red-100 text-red-800"}>
                             {isPresent && <CheckCircle className="w-4 h-4 mr-1" />}

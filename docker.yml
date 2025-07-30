@@ -1,0 +1,38 @@
+# Dockerfile
+
+# Use an official Python runtime as a parent image
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Install system dependencies that might be needed by libraries like Pillow or psycopg2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install poetry for dependency management
+RUN pip install poetry
+
+# Copy only the files needed for dependency installation
+# This leverages Docker's layer caching for faster builds
+COPY poetry.lock pyproject.toml /app/
+
+# Install project dependencies
+RUN poetry config virtualenvs.create false && \
+    poetry install --no-root --no-dev
+
+# Copy the entire project into the container
+COPY . /app/
+
+# Expose the port the app runs on
+EXPOSE 8000
+
+# The command to run your application. We will use gunicorn.
+# The entrypoint.sh script (created next) will run database migrations first.
+CMD ["/app/entrypoint.sh"]

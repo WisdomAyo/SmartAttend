@@ -1,3 +1,4 @@
+# backend/asgi.py - Updated for Uvicorn
 """
 ASGI config for backend project.
 
@@ -11,23 +12,32 @@ import os
 import django
 from django.core.asgi import get_asgi_application
 
-
+# Set the default settings module
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "backend.settings")
 
+# Initialize Django
 django.setup()
-from channels.auth import AuthMiddlewareStack
+
+# Import after Django setup
 from channels.routing import ProtocolTypeRouter, URLRouter
-
-import backend.api.routing 
+from channels.security.websocket import AllowedHostsOriginValidator
 from backend.api.middleware import TokenAuthMiddleware
+import backend.api.routing
 
+# Create the ASGI application
+django_asgi_app = get_asgi_application()
+
+# Define the ASGI application with WebSocket support
 application = ProtocolTypeRouter({
-    "http": get_asgi_application(),
-    "websocket": TokenAuthMiddleware(
-        URLRouter(
-            backend.api.routing.websocket_urlpatterns
+    # HTTP requests
+    "http": django_asgi_app,
+    
+    # WebSocket requests with authentication and origin validation
+    "websocket": AllowedHostsOriginValidator(
+        TokenAuthMiddleware(
+            URLRouter(
+                backend.api.routing.websocket_urlpatterns
+            )
         )
     ),
 })
-
-# application = get_asgi_application()

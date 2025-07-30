@@ -4,6 +4,11 @@
 django>=4.2,<5.0
 djangorestframework>=3.14,<4.0
 psycopg2-binary
+gunicorn
+uvicorn[standard]
+
+# Database URL parsing (for cloud deployments)
+dj-database-url
 
 # Authentication
 djoser
@@ -12,13 +17,25 @@ djangorestframework-simplejwt
 # Real-Time / ASGI
 channels>=4.0,<5.0
 channels-redis>=4.0,<5.0
-daphne>=4.0,<5.0
 
-# Face Recognition
-deepface
-Pillow
+# Face Recognition - Optimized for production
+insightface==0.7.3
+onnxruntime-cpu
 opencv-python-headless
+Pillow
+numpy
+scipy
+
+# Static files handling
+whitenoise
+
+# Caching
+django-redis
 
 # Utilities
 django-cors-headers
 openpyxl
+python-decouple
+
+# Development tools (optional - remove in production if needed)
+django-extensions

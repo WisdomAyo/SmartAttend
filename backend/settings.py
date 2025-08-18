@@ -131,7 +131,8 @@ REST_FRAMEWORK = {
         'rest_framework.renderers.JSONRenderer',
         'rest_framework.renderers.BrowsableAPIRenderer',
     ],
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    # 'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'DEFAULT_PAGINATION_CLASS': None,
     'PAGE_SIZE': 20,
 }
 
@@ -169,16 +170,15 @@ DJOSER = {
 # Email Configuration
 # --------------------------------------
 if DEBUG:
-    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 else:
     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-    EMAIL_HOST = get_env_variable('EMAIL_HOST', 'smtp.gmail.com')
-    EMAIL_PORT = get_env_variable('EMAIL_PORT', 587, cast=int)
+    EMAIL_HOST = get_env_variable('EMAIL_HOST', 'sandbox.smtp.mailtrap.io')
+    EMAIL_PORT = get_env_variable('EMAIL_PORT', 2525, cast=int)
     EMAIL_USE_TLS = get_env_variable('EMAIL_USE_TLS', True, cast=bool)
-    EMAIL_HOST_USER = get_env_variable('EMAIL_HOST_USER')
-    EMAIL_HOST_PASSWORD = get_env_variable('EMAIL_HOST_PASSWORD')
-
-DEFAULT_FROM_EMAIL = get_env_variable('DEFAULT_FROM_EMAIL', 'noreply@smartattend.com')
+    EMAIL_HOST_USER = get_env_variable('420f6eaf3208ff')
+    EMAIL_HOST_PASSWORD = get_env_variable('43413d6c080bd2')
+    DEFAULT_FROM_EMAIL = get_env_variable('DEFAULT_FROM_EMAIL', 'noreply@smartattend.com')
 
 # --------------------------------------
 # CORS Configuration
@@ -273,7 +273,7 @@ LOGGING = {
         },
         'file': {
             'class': 'logging.FileHandler',
-            'filename': os.path.join(BASE_DIR, 'logs', 'django.log'),
+            'filename': os.path.join(BASE_DIR, 'logs', 'face_recognition.log'),
             'formatter': 'verbose',
         } if not DEBUG else {
             'class': 'logging.NullHandler',
@@ -284,9 +284,9 @@ LOGGING = {
         'level': 'INFO',
     },
     'loggers': {
-        'django': {
+        'backend.api.consumers': {
             'handlers': ['console', 'file'],
-            'level': 'INFO',
+            'level': 'DEBUG' if DEBUG else 'INFO',
             'propagate': False,
         },
         'backend.api': {
@@ -298,8 +298,7 @@ LOGGING = {
 }
 
 # Create logs directory
-if not DEBUG:
-    os.makedirs(os.path.join(BASE_DIR, 'logs'), exist_ok=True)
+os.makedirs(os.path.join(BASE_DIR, 'logs'), exist_ok=True)
 
 # --------------------------------------
 # Face Recognition Settings
@@ -311,8 +310,8 @@ FACE_RECOGNITION_BACKEND = get_env_variable('FACE_RECOGNITION_BACKEND', 'opencv'
 
 # Memory optimization for face recognition
 if not DEBUG:
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TensorFlow logging
-    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # Force CPU usage
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  
+    os.environ['CUDA_VISIBLE_DEVICES'] = '-1' 
 
 # --------------------------------------
 # Cache Configuration

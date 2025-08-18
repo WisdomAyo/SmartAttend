@@ -7,9 +7,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { Camera, Download, Play, Square, Users, Clock, CheckCircle, BookOpen, Loader2, Wifi, WifiOff } from "lucide-react";
+import { Camera, Download, Play, Square, Users, Clock, CheckCircle, BookOpen, Loader2, Wifi, WifiOff, AlertCircle } from "lucide-react";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 // --- PROFESSIONAL STACK IMPORTS ---
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -28,6 +29,25 @@ type FaceBox = {
   status: 'confirmed' | 'sighted' | 'unknown';
 };
 
+// Error Boundary Component
+const ErrorFallback = ({ error, resetError }: { error: Error; resetError: () => void }) => (
+  <div className="p-6">
+    <Alert className="border-red-200 bg-red-50">
+      <AlertCircle className="h-4 w-4 text-red-600" />
+      <AlertDescription className="text-red-800">
+        <strong>Something went wrong:</strong> {error.message}
+        <Button 
+          onClick={resetError} 
+          className="ml-4 bg-red-600 hover:bg-red-700 text-white"
+          size="sm"
+        >
+          Try Again
+        </Button>
+      </AlertDescription>
+    </Alert>
+  </div>
+);
+
 const TakeAttendance = () => {
   // --- State Management ---
   const [selectedCourseId, setSelectedCourseId] = useState("");
@@ -35,6 +55,7 @@ const TakeAttendance = () => {
   const [presentStudentIds, setPresentStudentIds] = useState<Set<number>>(new Set());
   const [faceBoxes, setFaceBoxes] = useState<FaceBox[]>([]);
   const [annotatedFrame, setAnnotatedFrame] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   
   // --- Refs ---
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -43,39 +64,61 @@ const TakeAttendance = () => {
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   
   const { toast } = useToast();
+  const queryClient = useQueryClient();
 
   // ====================================================================
-  // 1. DATA FETCHING
+  // 1. DATA FETCHING WITH PROPER ERROR HANDLING
   // ====================================================================
-  const { data: courses, isLoading: isLoadingCourses } = useQuery<BackendCourse[]>({
+  const { 
+    data: coursesResponse, 
+    isLoading: isLoadingCourses, 
+    error: coursesError,
+    refetch: refetchCourses 
+  } = useQuery<any>({
     queryKey: ['coursesForAttendance'],
     queryFn: async () => {
       try {
         const response = await api.get('/courses/');
+        console.log('Courses API Response:', response.data);
         return response.data;
       } catch (error) {
         console.error('Error fetching courses:', error);
-        throw error;
+        throw new Error('Failed to fetch courses. Please check your connection.');
       }
     },
+    retry: 3,
+    retryDelay: 1000,
   });
 
-  const { data: courseData, isLoading: isLoadingStudents } = useQuery<BackendCourse>({
+  // Safely extract courses array from response
+  const courses: BackendCourse[] = Array.isArray(coursesResponse) 
+    ? coursesResponse 
+    : coursesResponse?.results || coursesResponse?.data || [];
+
+  const { 
+    data: courseData, 
+    isLoading: isLoadingStudents,
+    error: courseError,
+    refetch: refetchCourse 
+  } = useQuery<BackendCourse>({
     queryKey: ['courseDetailForAttendance', selectedCourseId],
     queryFn: async () => {
       try {
         const response = await api.get(`/courses/${selectedCourseId}/`);
+        console.log('Course Detail API Response:', response.data);
         return response.data;
       } catch (error) {
         console.error('Error fetching course details:', error);
-        throw error;
+        throw new Error('Failed to fetch course details.');
       }
     },
     enabled: !!selectedCourseId,
+    retry: 2,
+    retryDelay: 1000,
   });
 
   // ====================================================================
-  // 2. WEBSOCKET LOGIC
+  // 2. WEBSOCKET LOGIC WITH IMPROVED ERROR HANDLING
   // ====================================================================
   const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null;
 
@@ -84,151 +127,203 @@ const TakeAttendance = () => {
     : null;
 
   const { sendMessage, lastMessage, readyState } = useWebSocket(socketUrl, {
-    shouldReconnect: () => true,
+    shouldReconnect: (closeEvent) => {
+      console.log('WebSocket close event:', closeEvent);
+      return true;
+    },
     reconnectAttempts: WEBSOCKET_RECONNECT_ATTEMPTS,
     reconnectInterval: WEBSOCKET_RECONNECT_INTERVAL,
     onOpen: () => {
       console.log("WebSocket connection established.");
+      setError(null);
       toast({ title: "Connected", description: "WebSocket connection established." });
     },
     onError: (error) => {
       console.error("WebSocket error:", error);
-      toast({ title: "Connection Error", description: "Failed to connect to server.", variant: "destructive" });
+      setError("WebSocket connection failed");
+      toast({ 
+        title: "Connection Error", 
+        description: "Failed to connect to server.", 
+        variant: "destructive" 
+      });
     },
+    onClose: (event) => {
+      console.log("WebSocket closed:", event);
+      if (isCapturing) {
+        setError("Connection lost during capture");
+      }
+    }
   });
 
-  // Handle WebSocket messages
+  // Handle WebSocket messages with better error handling
   useEffect(() => {
     if (lastMessage !== null) {
       try {
         const messageData = JSON.parse(lastMessage.data);
+        console.log('WebSocket message received:', messageData);
 
         if (messageData.type === 'face_data') {
           setFaceBoxes(messageData.faces || []); 
 
-          if (messageData.newly_recognized && messageData.newly_recognized.length > 0) {
-            const newIds = messageData.newly_recognized.map((s: { id: number; name: string }) => s.id);
+          if (messageData.newly_recognized && Array.isArray(messageData.newly_recognized) && messageData.newly_recognized.length > 0) {
+            const newIds = messageData.newly_recognized
+              .filter((s: any) => s && typeof s.id === 'number')
+              .map((s: { id: number; name: string }) => s.id);
+            
             setPresentStudentIds(prev => new Set([...Array.from(prev), ...newIds]));
             
             messageData.newly_recognized.forEach((student: { id: number; name: string }) => {
-              toast({
-                title: "Student Recognized!",
-                description: `${student.name} has been marked present.`,
-              });
+              if (student && student.name) {
+                toast({
+                  title: "Student Recognized!",
+                  description: `${student.name} has been marked present.`,
+                });
+              }
             });
           }
         } else if (messageData.type === 'session_ready') {
           toast({ title: "Session is ready", description: "You can now start the capture." });
         } else if (messageData.type === 'error') {
-          toast({ title: "Session Error", description: messageData.message, variant: "destructive" });
+          setError(messageData.message || 'Unknown WebSocket error');
+          toast({ 
+            title: "Session Error", 
+            description: messageData.message || 'Unknown error occurred',
+            variant: "destructive" 
+          });
         }
       } catch (error) {
         console.error('Error parsing WebSocket message:', error);
+        setError('Failed to parse server response');
       }
     }
   }, [lastMessage, toast]);
 
-  // Draw face boxes overlay
+  // Draw face boxes overlay with error handling
   useEffect(() => {
-    const video = videoRef.current;
-    const canvas = overlayCanvasRef.current;
-    if (!video || !canvas) return;
+    try {
+      const video = videoRef.current;
+      const canvas = overlayCanvasRef.current;
+      if (!video || !canvas) return;
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
 
-    // Match canvas size to the video element size
-    canvas.width = video.clientWidth;
-    canvas.height = video.clientHeight;
+      // Match canvas size to the video element size
+      canvas.width = video.clientWidth;
+      canvas.height = video.clientHeight;
 
-    // Clear previous drawings
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // Clear previous drawings
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    if (!faceBoxes || faceBoxes.length === 0) return;
+      if (!faceBoxes || faceBoxes.length === 0) return;
 
-    const scaleX = canvas.width / 320;   // The width of the frame sent to backend
-    const scaleY = canvas.height / 240;  // The height of the frame sent to backend
+      const scaleX = canvas.width / 320;   // The width of the frame sent to backend
+      const scaleY = canvas.height / 240;  // The height of the frame sent to backend
 
-    faceBoxes.forEach(face => {
-      const { source_x, source_y, source_w, source_h } = face.box;
-      
-      // Scale coordinates to fit the display
-      const x = source_x * scaleX;
-      const y = source_y * scaleY;
-      const w = source_w * scaleX;
-      const h = source_h * scaleY;
+      faceBoxes.forEach(face => {
+        if (!face.box) return;
+        
+        const { source_x, source_y, source_w, source_h } = face.box;
+        
+        // Scale coordinates to fit the display
+        const x = source_x * scaleX;
+        const y = source_y * scaleY;
+        const w = source_w * scaleX;
+        const h = source_h * scaleY;
 
-      // Set styles based on status
-      let color, text;
-      switch(face.status) {
-        case 'confirmed': 
-          color = '#22c55e'; 
-          text = face.name; 
-          break;
-        case 'sighted':   
-          color = '#facc15'; 
-          text = `${face.name}?`; 
-          break;
-        default:          
-          color = '#ef4444'; 
-          text = face.name || 'Unknown'; 
-          break;
-      }
-      
-      // Draw the box
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 3;
-      ctx.strokeRect(x, y, w, h);
+        // Set styles based on status
+        let color, text;
+        switch(face.status) {
+          case 'confirmed': 
+            color = '#22c55e'; 
+            text = face.name || 'Confirmed'; 
+            break;
+          case 'sighted':   
+            color = '#facc15'; 
+            text = `${face.name || 'Unknown'}?`; 
+            break;
+          default:          
+            color = '#ef4444'; 
+            text = face.name || 'Unknown'; 
+            break;
+        }
+        
+        // Draw the box
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(x, y, w, h);
 
-      // Draw the text background
-      ctx.fillStyle = color;
-      ctx.font = '16px sans-serif';
-      const textWidth = ctx.measureText(text).width;
-      ctx.fillRect(x, y - 22, textWidth + 10, 22);
+        // Draw the text background
+        ctx.fillStyle = color;
+        ctx.font = '16px sans-serif';
+        const textWidth = ctx.measureText(text).width;
+        ctx.fillRect(x, y - 22, textWidth + 10, 22);
 
-      // Draw the text
-      ctx.fillStyle = '#000000';
-      ctx.fillText(text, x + 5, y - 5);
-    });
+        // Draw the text
+        ctx.fillStyle = '#000000';
+        ctx.fillText(text, x + 5, y - 5);
+      });
+    } catch (error) {
+      console.error('Error drawing face boxes:', error);
+    }
   }, [faceBoxes]);
 
-  // --- CAMERA & STREAMING LOGIC ---
+  // --- CAMERA & STREAMING LOGIC WITH BETTER ERROR HANDLING ---
   const sendFrame = useCallback(() => {
-    if (videoRef.current && canvasRef.current && readyState === ReadyState.OPEN) {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      canvas.width = 320; // Send smaller frames for performance
-      canvas.height = 240;
-      const context = canvas.getContext('2d');
-      if (context) {
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const imageBase64 = canvas.toDataURL('image/jpeg', 0.7);
-        sendMessage(JSON.stringify({ image: imageBase64 }));
+    try {
+      if (videoRef.current && canvasRef.current && readyState === ReadyState.OPEN) {
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        
+        // Check if video is actually playing
+        if (video.readyState < 2) return;
+        
+        canvas.width = 320; // Send smaller frames for performance
+        canvas.height = 240;
+        const context = canvas.getContext('2d');
+        if (context) {
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imageBase64 = canvas.toDataURL('image/jpeg', 0.7);
+          sendMessage(JSON.stringify({ image: imageBase64 }));
+        }
       }
+    } catch (error) {
+      console.error('Error sending frame:', error);
+      setError('Failed to send video frame');
     }
   }, [readyState, sendMessage]);
   
   const startCapture = async () => {
-    setPresentStudentIds(new Set());
-    setFaceBoxes([]); 
-    setAnnotatedFrame(null);
-    
     try {
+      setError(null);
+      setPresentStudentIds(new Set());
+      setFaceBoxes([]); 
+      setAnnotatedFrame(null);
+      
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: 'user' } 
+        video: { 
+          facingMode: 'user',
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        } 
       });
       
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        setIsCapturing(true);
-        intervalRef.current = setInterval(sendFrame, FRAME_SEND_INTERVAL);
-        toast({ 
-          title: "Real-time session started", 
-          description: "Pan the camera around the classroom." 
-        });
+        
+        // Wait for video to be ready
+        videoRef.current.onloadedmetadata = () => {
+          setIsCapturing(true);
+          intervalRef.current = setInterval(sendFrame, FRAME_SEND_INTERVAL);
+          toast({ 
+            title: "Real-time session started", 
+            description: "Pan the camera around the classroom." 
+          });
+        };
       }
     } catch (error) {
       console.error('Camera access error:', error);
+      setError('Camera access denied or not available');
       toast({ 
         title: "Camera access denied", 
         description: "Please allow camera access to continue.",
@@ -238,21 +333,26 @@ const TakeAttendance = () => {
   };
 
   const stopCapture = () => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
+    try {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      
+      if (videoRef.current?.srcObject) {
+        const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
+        tracks.forEach(track => track.stop());
+        videoRef.current.srcObject = null;
+      }
+      
+      setIsCapturing(false);
+      setAnnotatedFrame(null);
+      setFaceBoxes([]);
+      setError(null);
+      toast({ title: "Session ended" });
+    } catch (error) {
+      console.error('Error stopping capture:', error);
     }
-    
-    if (videoRef.current?.srcObject) {
-      const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
-      tracks.forEach(track => track.stop());
-      videoRef.current.srcObject = null;
-    }
-    
-    setIsCapturing(false);
-    setAnnotatedFrame(null);
-    setFaceBoxes([]);
-    toast({ title: "Session ended" });
   };
 
   // Cleanup on unmount
@@ -268,12 +368,13 @@ const TakeAttendance = () => {
     };
   }, []);
 
-  // --- EXCEL EXPORT LOGIC ---
+  // --- EXCEL EXPORT LOGIC WITH ERROR HANDLING ---
   const exportToExcel = async () => {
     if (!selectedCourseId) return;
     
     try {
-      const response = await api.get(`/courses/${selectedCourseId}/export-attendance/`, {
+      const today = new Date().toISOString().split('T')[0];
+      const response = await api.get(`/courses/${selectedCourseId}/attendance-report/?date=${today}`, {
         responseType: 'blob'
       });
       
@@ -284,7 +385,7 @@ const TakeAttendance = () => {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `attendance-${selectedCourseData?.name || 'course'}.xlsx`;
+      a.download = `attendance-${selectedCourseData?.name || 'course'}-${today}.xlsx`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -301,9 +402,24 @@ const TakeAttendance = () => {
     }
   };
 
-  // --- DERIVED DATA FOR UI ---
-  const selectedCourseData = courses?.find(c => c.id.toString() === selectedCourseId);
+  // --- DERIVED DATA FOR UI WITH SAFE ACCESS ---
+  const selectedCourseData = courses.find?.(c => c.id.toString() === selectedCourseId);
   const students = courseData?.students || [];
+
+  // Show error state if there's a critical error
+  if (coursesError) {
+    return (
+      <Layout>
+        <ErrorFallback 
+          error={new Error(coursesError?.message || 'Failed to load courses')} 
+          resetError={() => {
+            setError(null);
+            refetchCourses();
+          }} 
+        />
+      </Layout>
+    );
+  }
 
   return (
     <Layout>
@@ -331,6 +447,23 @@ const TakeAttendance = () => {
           )}
         </div>
 
+        {/* Error Alert */}
+        {error && (
+          <Alert className="border-red-200 bg-red-50 animate-fade-in-up">
+            <AlertCircle className="h-4 w-4 text-red-600" />
+            <AlertDescription className="text-red-800">
+              <strong>Error:</strong> {error}
+              <Button 
+                onClick={() => setError(null)} 
+                className="ml-4 bg-red-600 hover:bg-red-700 text-white"
+                size="sm"
+              >
+                Dismiss
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+
         {/* Course Selection */}
         <Card className="glass-card animate-fade-in-up relative overflow-hidden">
           <CardHeader>
@@ -345,17 +478,29 @@ const TakeAttendance = () => {
           <CardContent className="relative">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div className="space-y-4">
-                <Select value={selectedCourseId} onValueChange={setSelectedCourseId} disabled={isLoadingCourses}>
+                <Select 
+                  value={selectedCourseId} 
+                  onValueChange={setSelectedCourseId} 
+                  disabled={isLoadingCourses}
+                >
                   <SelectTrigger className="w-full bg-white/50 border-forest-200 h-12">
-                    <SelectValue placeholder={isLoadingCourses ? "Loading..." : "Select a course..."} />
+                    <SelectValue placeholder={
+                      isLoadingCourses 
+                        ? "Loading courses..." 
+                        : courses.length === 0 
+                        ? "No courses available" 
+                        : "Select a course..."
+                    } />
                   </SelectTrigger>
                   <SelectContent className="bg-white border-forest-200 shadow-xl">
-                    {courses?.map((course) => (
+                    {courses.map((course) => (
                       <SelectItem key={course.id} value={course.id.toString()}>
                         <div className="flex items-center justify-between w-full py-2">
                           <div>
                             <span className="font-medium">{course.name}</span>
-                            <p className="text-sm text-forest-600">{course.students.length} students enrolled</p>
+                            <p className="text-sm text-forest-600">
+                              {Array.isArray(course.students) ? course.students.length : 0} students enrolled
+                            </p>
                           </div>
                         </div>
                       </SelectItem>
@@ -369,7 +514,12 @@ const TakeAttendance = () => {
                     <div className="grid grid-cols-2 gap-4 text-sm text-forest-600">
                       <div className="flex items-center space-x-2">
                         <Users className="w-4 h-4" />
-                        <span>{selectedCourseData.students.length} Students</span>
+                        <span>
+                          {Array.isArray(selectedCourseData.students) 
+                            ? selectedCourseData.students.length 
+                            : 0
+                          } Students
+                        </span>
                       </div>
                       <div className="flex items-center space-x-2">
                         <Clock className="w-4 h-4" />
@@ -509,6 +659,23 @@ const TakeAttendance = () => {
                       <Loader2 className="w-4 h-4 animate-spin mr-2" />
                       Loading students...
                     </div>
+                  ) : courseError ? (
+                    <div className="text-center p-4 text-red-500">
+                      <AlertCircle className="w-6 h-6 mx-auto mb-2" />
+                      Failed to load students
+                      <Button 
+                        onClick={() => refetchCourse()} 
+                        className="ml-2 bg-red-600 hover:bg-red-700 text-white"
+                        size="sm"
+                      >
+                        Retry
+                      </Button>
+                    </div>
+                  ) : students.length === 0 ? (
+                    <div className="text-center p-4 text-gray-500">
+                      <Users className="w-6 h-6 mx-auto mb-2 opacity-50" />
+                      No students enrolled in this course
+                    </div>
                   ) : (
                     students.map((student) => {
                       const isPresent = presentStudentIds.has(student.id);
@@ -522,12 +689,16 @@ const TakeAttendance = () => {
                           <Avatar className="w-10 h-10">
                             <AvatarImage src={student.profile_photo || undefined} />
                             <AvatarFallback className="bg-forest-gradient text-white">
-                              {student.first_name?.[0]}{student.last_name?.[0]}
+                              {(student.first_name?.[0] || '')}
+                              {(student.last_name?.[0] || '')}
                             </AvatarFallback>
                           </Avatar>
                           <div className="flex-1">
                             <p className="font-medium text-forest-900">
-                              {student.first_name} {student.last_name}
+                              {student.first_name || ''} {student.last_name || ''}
+                            </p>
+                            <p className="text-sm text-forest-600">
+                              {student.student_id || 'No ID'}
                             </p>
                           </div>
                           <Badge className={isPresent ? "bg-green-200 text-green-800" : "bg-red-100 text-red-800"}>

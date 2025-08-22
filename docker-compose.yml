@@ -1,6 +1,4 @@
 
-version: '3.8' # Specifies the version of the compose file format
-
 services: # This is where we define our containers
   
   # We are defining a service and naming it 'redis'

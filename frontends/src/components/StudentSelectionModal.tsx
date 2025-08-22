@@ -27,6 +27,8 @@ const StudentSelectionModal = ({ open, onOpenChange, allStudents, isLoadingStude
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  
+
   // --- MUTATION FOR ENROLLING STUDENTS ---
   const enrollStudentsMutation = useMutation({
     mutationFn: (studentIds: number[]) => {
@@ -104,6 +106,7 @@ const StudentSelectionModal = ({ open, onOpenChange, allStudents, isLoadingStude
     return availableStudents.filter(s =>
       `${s.first_name} ${s.last_name}`.toLowerCase().includes(lowerCaseSearchTerm) || 
       s.student_id.toLowerCase().includes(lowerCaseSearchTerm) || 
+      s.level.toLowerCase().includes(lowerCaseSearchTerm) ||
     (s.email && s.email.toLowerCase().includes(lowerCaseSearchTerm))
   );
   }, [availableStudents, searchTerm]);

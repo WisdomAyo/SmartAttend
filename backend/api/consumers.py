@@ -45,7 +45,7 @@ class AttendanceConsumer(AsyncWebsocketConsumer):
         
         # Task queue and processing flag
         self.task_queue = asyncio.Queue(maxsize=1)
-        # self.is_processing = False
+        self.is_closing = False
         
         await self.accept()
         
@@ -64,6 +64,7 @@ class AttendanceConsumer(AsyncWebsocketConsumer):
 
     async def disconnect(self, close_code):
         """Handle disconnection and gracefully shut down the background task."""
+        self.is_closing = True
         if hasattr(self, 'processing_task') and not self.processing_task.done():
             self.processing_task.cancel()
         await self.cleanup_resources()
@@ -119,12 +120,13 @@ class AttendanceConsumer(AsyncWebsocketConsumer):
                     await self.mark_student_present(student_data['id'], self.course_id)
                 
                 # Send results back to client
-                await self.send_json({
-                    'type': 'face_data',
-                    'faces': faces_data,
-                    'newly_recognized': newly_confirmed,
-                    'total_recognized_count': len(self.session_recognized_students),
-                })
+                if not self.is_closing:
+                    await self.send_json({
+                        'type': 'face_data',
+                        'faces': faces_data,
+                        'newly_recognized': newly_confirmed,
+                        'total_recognized_count': len(self.session_recognized_students),
+                    })
                 
                 # Mark task as done
                 self.task_queue.task_done()
@@ -169,14 +171,20 @@ class AttendanceConsumer(AsyncWebsocketConsumer):
                     if df.empty:
                         continue 
 
-                    # Get the best match
+                     # Get the best match
                     best_match = df.iloc[0]
                     
-                    if 'distance' not in df.columns:
+                    # FIXED: More robust distance column handling
+                    distance = float('inf')
+                    distance_col_name = f"{MODEL_NAME}_{DISTANCE_METRIC}"
+                    
+                    if distance_col_name in df.columns:
+                        distance = best_match.get(distance_col_name, float('inf'))
+                    elif 'distance' in df.columns:
+                        distance = best_match.get('distance', float('inf'))
+                    else:
+                        logger.warning(f"Could not find a distance column in DeepFace results. Looked for '{distance_col_name}' and 'distance'. Available columns: {df.columns}")
                         continue
-                    
-                    
-                    distance = best_match.get(DISTANCE_METRIC, float('inf'))
                     
                     # FIXED: Better bounding box handling
                     try:
@@ -293,13 +301,15 @@ class AttendanceConsumer(AsyncWebsocketConsumer):
             
     # --- Helper methods ---
     async def send_json(self, data):
-        """Helper to send JSON data."""
-        await self.send(text_data=json.dumps(data))
+        """Helper to send JSON data, checking if the connection is closing."""
+        if not self.is_closing:
+            await self.send(text_data=json.dumps(data))
 
     async def send_error_and_close(self, message):
         """Send an error message and close the connection."""
-        await self.send_json({'type': 'error', 'message': message})
-        await self.close(code=4000)
+        if not self.is_closing:
+            await self.send_json({'type': 'error', 'message': message})
+            await self.close(code=4000)
 
     @sync_to_async
     def prepare_face_db_for_deepface(self):
@@ -323,14 +333,9 @@ class AttendanceConsumer(AsyncWebsocketConsumer):
             DeepFace.find(img_path=first_image_path, db_path=self.db_path, model_name=MODEL_NAME, enforce_detection=False, silent=True)
             if not any(f.endswith('.pkl') for f in os.listdir(self.db_path)): return False
             return True
-        except: return False
-
-    # --- Other helper methods are unchanged ---
-    async def send_json(self, data):
-        await self.send(text_data=json.dumps(data))
-    async def send_error_and_close(self, message):
-        await self.send_json({'type': 'error', 'message': message})
-        await self.close(code=4000)
+        except Exception as e:
+            logger.error(f"Failed to prepare face database for course {self.course_id}: {e}", exc_info=True)
+            return False
 
     @sync_to_async
     def cleanup_resources(self):

@@ -131,8 +131,8 @@ REST_FRAMEWORK = {
         'rest_framework.renderers.JSONRenderer',
         'rest_framework.renderers.BrowsableAPIRenderer',
     ],
-    # 'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'DEFAULT_PAGINATION_CLASS': None,
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    # 'DEFAULT_PAGINATION_CLASS': None,
     'PAGE_SIZE': 20,
 }
 
@@ -173,11 +173,11 @@ if DEBUG:
     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 else:
     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-    EMAIL_HOST = get_env_variable('EMAIL_HOST', 'sandbox.smtp.mailtrap.io')
-    EMAIL_PORT = get_env_variable('EMAIL_PORT', 2525, cast=int)
+    EMAIL_HOST = get_env_variable('EMAIL_HOST')
+    EMAIL_PORT = get_env_variable('EMAIL_PORT', 587, cast=int)
     EMAIL_USE_TLS = get_env_variable('EMAIL_USE_TLS', True, cast=bool)
-    EMAIL_HOST_USER = get_env_variable('420f6eaf3208ff')
-    EMAIL_HOST_PASSWORD = get_env_variable('43413d6c080bd2')
+    EMAIL_HOST_USER = get_env_variable('EMAIL_HOST_USER')
+    EMAIL_HOST_PASSWORD = get_env_variable('EMAIL_HOST_PASSWORD')
     DEFAULT_FROM_EMAIL = get_env_variable('DEFAULT_FROM_EMAIL', 'noreply@smartattend.com')
 
 # --------------------------------------

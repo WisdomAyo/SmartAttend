@@ -56,6 +56,7 @@ const TakeAttendance = () => {
   const [faceBoxes, setFaceBoxes] = useState<FaceBox[]>([]);
   const [annotatedFrame, setAnnotatedFrame] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [cameraPermission, setCameraPermission] = useState<PermissionState | 'prompt'>('prompt');
   
   // --- Refs ---
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -268,6 +269,29 @@ const TakeAttendance = () => {
     }
   }, [faceBoxes]);
 
+  // Check camera permission on component mount
+  useEffect(() => {
+    const checkPermissions = async () => {
+      if (navigator.permissions) {
+        try {
+          const permissionStatus = await navigator.permissions.query({ name: 'camera' as PermissionName });
+          setCameraPermission(permissionStatus.state);
+          permissionStatus.onchange = () => {
+            setCameraPermission(permissionStatus.state);
+          };
+        } catch (error) {
+          console.error("Error checking camera permission:", error);
+          // Fallback for browsers that might not support query with 'camera'
+          setCameraPermission('prompt'); 
+        }
+      } else {
+        console.warn("Permissions API not supported, proceeding with prompt.");
+        setCameraPermission('prompt');
+      }
+    };
+    checkPermissions();
+  }, []);
+
   // --- CAMERA & STREAMING LOGIC WITH BETTER ERROR HANDLING ---
   const sendFrame = useCallback(() => {
     try {
@@ -294,8 +318,15 @@ const TakeAttendance = () => {
   }, [readyState, sendMessage]);
   
   const startCapture = async () => {
+    // Reset previous errors
+    setError(null);
+
+    if (cameraPermission === 'denied') {
+      setError('Camera access has been denied. Please enable it in your browser settings and refresh the page.');
+      return;
+    }
+
     try {
-      setError(null);
       setPresentStudentIds(new Set());
       setFaceBoxes([]); 
       setAnnotatedFrame(null);
@@ -308,10 +339,11 @@ const TakeAttendance = () => {
         } 
       });
       
+      setCameraPermission('granted'); // Update permission state on success
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         
-        // Wait for video to be ready
         videoRef.current.onloadedmetadata = () => {
           setIsCapturing(true);
           intervalRef.current = setInterval(sendFrame, FRAME_SEND_INTERVAL);
@@ -321,12 +353,18 @@ const TakeAttendance = () => {
           });
         };
       }
-    } catch (error) {
-      console.error('Camera access error:', error);
-      setError('Camera access denied or not available');
+    } catch (err) {
+      console.error('Camera access error:', err);
+      const error = err as Error;
+      if (error.name === "NotAllowedError" || error.name === "PermissionDeniedError") {
+        setCameraPermission('denied');
+        setError('Camera access has been denied. Please enable it in your browser settings and refresh the page.');
+      } else {
+        setError(`Camera error: ${error.message}. Please ensure your camera is working.`);
+      }
       toast({ 
-        title: "Camera access denied", 
-        description: "Please allow camera access to continue.",
+        title: "Camera Access Failed", 
+        description: "Could not start camera. Please check permissions and hardware.",
         variant: "destructive" 
       });
     }
@@ -448,7 +486,7 @@ const TakeAttendance = () => {
         </div>
 
         {/* Error Alert */}
-        {error && (
+        {error && !error.includes("Camera access has been denied") && (
           <Alert className="border-red-200 bg-red-50 animate-fade-in-up">
             <AlertCircle className="h-4 w-4 text-red-600" />
             <AlertDescription className="text-red-800">
@@ -460,6 +498,17 @@ const TakeAttendance = () => {
               >
                 Dismiss
               </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Camera Permission Denied Alert */}
+        {cameraPermission === 'denied' && (
+           <Alert className="border-yellow-300 bg-yellow-50 animate-fade-in-up">
+            <AlertCircle className="h-4 w-4 text-yellow-600" />
+            <AlertDescription className="text-yellow-800">
+              <strong>Camera Permission Required</strong>
+              <p>Camera access is disabled. To use this feature, please go to your browser's settings, find this site, and grant permission to access the camera. You may need to refresh the page after changing the settings.</p>
             </AlertDescription>
           </Alert>
         )}

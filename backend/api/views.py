@@ -49,7 +49,8 @@ from .serializers import (
     CourseDetailSerializer,
 )
 # Enhanced Face Recognition Service
-from backend.api.services import face_recognition_service
+from backend.api.face_recognition_service import face_recognition_service
+from .utils import handle_base64_image
 
 
 class StandardResultsSetPagination(PageNumberPagination):
@@ -72,49 +73,11 @@ class UserViewSet(DjoserUserViewSet):
             user = request.user
             base64_image = request.data.get('image')
 
-            if not base64_image:
-                return Response({
-                    "error": "No image data provided.",
-                    "code": "MISSING_IMAGE"
-                }, status=status.HTTP_400_BAD_REQUEST)
+            temp_path, image_data, ext, error_response = handle_base64_image(base64_image, user.id, 'user')
+            if error_response:
+                return error_response
 
-            # Ensure MEDIA_ROOT directory exists
-            if not os.path.exists(settings.MEDIA_ROOT):
-                os.makedirs(settings.MEDIA_ROOT)
-
-            # Decode and validate image
             try:
-                if ';base64,' in base64_image:
-                    format, imgstr = base64_image.split(';base64,')
-                    ext = format.split('/')[-1].split(';')[0]
-                else:
-                    if base64_image.startswith('/9j/'): 
-                        ext = 'jpg'
-                    elif base64_image.startswith('iVBORw0KGgo'): 
-                        ext = 'png'
-                    else:
-                        return Response({
-                            "error": "Could not determine image format.",
-                            "code": "INVALID_FORMAT"
-                        }, status=status.HTTP_400_BAD_REQUEST)
-                    imgstr = base64_image
-
-                if ext not in ['jpeg', 'jpg', 'png']:
-                    return Response({
-                        "error": "Invalid image format. Only JPEG and PNG are supported.",
-                        "code": "UNSUPPORTED_FORMAT"
-                    }, status=status.HTTP_400_BAD_REQUEST)
-
-                imgstr += '=' * (-len(imgstr) % 4)
-                image_data = base64.b64decode(imgstr)
-
-                # Save temporary image for validation
-                temp_filename = f'temp_user_{user.id}_{os.urandom(4).hex()}.{ext}'
-                temp_path = os.path.join(settings.MEDIA_ROOT, temp_filename)
-                
-                with open(temp_path, 'wb') as f:
-                    f.write(image_data)
-
                 # Validate face in image
                 validation_result = face_recognition_service.validate_face_image(temp_path)
                 
@@ -143,10 +106,6 @@ class UserViewSet(DjoserUserViewSet):
                 # Save the new file
                 user.profile_picture.save(image_filename, file_content, save=True)
                 
-                # Cleanup temp file
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                
                 logger.info(f"Successfully uploaded profile picture for user {user.id}")
 
                 # Return updated user data
@@ -157,12 +116,10 @@ class UserViewSet(DjoserUserViewSet):
                     "face_validation": validation_result
                 }, status=status.HTTP_200_OK)
 
-            except Exception as decode_error:
-                logger.error(f"Error processing image for user {user.id}: {decode_error}")
-                return Response({
-                    "error": "Invalid image data. Please check the image format.",
-                    "code": "DECODE_ERROR"
-                }, status=status.HTTP_400_BAD_REQUEST)
+            finally:
+                # Cleanup temp file
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
 
         except Exception as e:
             logger.error(f"Unexpected error during profile picture upload: {e}")
@@ -671,6 +628,92 @@ class CourseViewSet(viewsets.ModelViewSet):
                 "code": "REPORT_ERROR"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    @action(detail=True, methods=['post'], url_path='debug-face-recognition')
+    def debug_face_recognition(self, request, pk=None):
+        """
+        Debug endpoint to test face recognition with detailed logging.
+        Send the same image as both student photo and test image to verify matching.
+        """
+        try:
+            course = self.get_object()
+            
+            if course.teacher != request.user:
+                return Response({
+                    "error": "Permission denied"
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            base64_image = request.data.get('image')
+            if not base64_image:
+                return Response({
+                    "error": "No image provided"
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Decode image
+            if ';base64,' in base64_image:
+                format, imgstr = base64_image.split(';base64,')
+                ext = format.split('/')[-1].split(';')[0]
+            else:
+                imgstr = base64_image
+                ext = 'jpg'
+            
+            imgstr += '=' * (-len(imgstr) % 4)
+            image_data = base64.b64decode(imgstr)
+            
+            # Save test image
+            test_image_path = os.path.join(settings.MEDIA_ROOT, f'debug_test_{os.urandom(4).hex()}.{ext}')
+            with open(test_image_path, 'wb') as f:
+                f.write(image_data)
+            
+            debug_results = []
+            enrolled_students = course.students.all()
+            
+            for student in enrolled_students:
+                if not student.profile_photo or not os.path.exists(student.profile_photo.path):
+                    continue
+                    
+                try:
+                    # Test direct DeepFace verification
+                    result = DeepFace.verify(
+                        img1_path=test_image_path,
+                        img2_path=student.profile_photo.path,
+                        model_name='VGG-Face',
+                        distance_metric='cosine',
+                        enforce_detection=False
+                    )
+                    
+                    debug_results.append({
+                        'student_id': student.id,
+                        'student_name': f"{student.first_name} {student.last_name}",
+                        'distance': result.get('distance', 'N/A'),
+                        'verified': result.get('verified', False),
+                        'threshold': result.get('threshold', 'N/A'),
+                        'model': result.get('model', 'N/A')
+                    })
+                    
+                except Exception as e:
+                    debug_results.append({
+                        'student_id': student.id,
+                        'student_name': f"{student.first_name} {student.last_name}",
+                        'error': str(e)
+                    })
+            
+            # Cleanup
+            if os.path.exists(test_image_path):
+                os.remove(test_image_path)
+            
+            return Response({
+                'debug_results': debug_results,
+                'total_students_tested': len(debug_results),
+                'students_with_photos': len([r for r in debug_results if 'error' not in r]),
+                'successful_matches': len([r for r in debug_results if r.get('verified', False)])
+            })
+            
+        except Exception as e:
+            logger.error(f"Debug face recognition error: {e}")
+            return Response({
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 class StudentViewSet(viewsets.ModelViewSet):
     """
@@ -718,53 +761,15 @@ class StudentViewSet(viewsets.ModelViewSet):
                 }, status=status.HTTP_403_FORBIDDEN)
 
             base64_image = request.data.get('image')
-            if not base64_image:
-                return Response({
-                    "error": "No image data provided.",
-                    "code": "MISSING_IMAGE"
-                }, status=status.HTTP_400_BAD_REQUEST)
+            temp_path, image_data, ext, error_response = handle_base64_image(base64_image, student.id, 'student')
+            if error_response:
+                return error_response
 
             try:
-                if not os.path.exists(settings.MEDIA_ROOT):
-                    os.makedirs(settings.MEDIA_ROOT)
-
-                # Decode image
-                if ';base64,' in base64_image:
-                    format, imgstr = base64_image.split(';base64,')
-                    ext = format.split('/')[-1].split(';')[0]
-                else:
-                    if base64_image.startswith('/9j/'): 
-                        ext = 'jpg'
-                    elif base64_image.startswith('iVBORw0KGgo'): 
-                        ext = 'png'
-                    else:
-                        return Response({
-                            "error": "Could not determine image format.",
-                            "code": "INVALID_FORMAT"
-                        }, status=status.HTTP_400_BAD_REQUEST)
-                    imgstr = base64_image
-
-                if ext not in ['jpeg', 'jpg', 'png']:
-                    return Response({
-                        "error": "Invalid image format. Only JPEG and PNG are supported.",
-                        "code": "UNSUPPORTED_FORMAT"
-                    }, status=status.HTTP_400_BAD_REQUEST)
-
-                imgstr += '=' * (-len(imgstr) % 4)
-                image_data = base64.b64decode(imgstr)
-
-                # Save temporary image for validation
-                temp_filename = f'temp_student_{student.id}_{os.urandom(4).hex()}.{ext}'
-                temp_path = os.path.join(settings.MEDIA_ROOT, temp_filename)
-                
-                with open(temp_path, 'wb') as f:
-                    f.write(image_data)
-
                 # Validate face in image
                 validation_result = face_recognition_service.validate_face_image(temp_path)
                 
                 if not validation_result['valid']:
-                    os.remove(temp_path)  # Cleanup
                     return Response({
                         "error": f"No clear face detected in image: {validation_result.get('error', 'Unknown error')}",
                         "code": "NO_FACE_DETECTED",
@@ -788,10 +793,6 @@ class StudentViewSet(viewsets.ModelViewSet):
                 # Save the new file
                 student.profile_photo.save(image_filename, file_content, save=True)
                 
-                # Cleanup temp file
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                
                 logger.info(f"Successfully uploaded profile picture for student {student.id}")
 
                 # Return updated student data
@@ -802,12 +803,10 @@ class StudentViewSet(viewsets.ModelViewSet):
                     "face_validation": validation_result
                 }, status=status.HTTP_200_OK)
 
-            except Exception as decode_error:
-                logger.error(f"Error processing image for student {student.id}: {decode_error}")
-                return Response({
-                    "error": "Invalid image data. Please check the image format.",
-                    "code": "DECODE_ERROR"
-                }, status=status.HTTP_400_BAD_REQUEST)
+            finally:
+                # Cleanup temp file
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
 
         except Exception as e:
             logger.error(f"Unexpected error during student face enrollment: {e}")
@@ -817,74 +816,3 @@ class StudentViewSet(viewsets.ModelViewSet):
                 "code": "INTERNAL_ERROR"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
-class FaceRecognitionDebugView(APIView):
-    """
-    Debug view for face recognition testing
-    """
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        try:
-            base64_image = request.data.get('image')
-            if not base64_image:
-                return Response({
-                    "error": "No image data provided.",
-                    "code": "MISSING_IMAGE"
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-            # Decode and save image
-            if ';base64,' in base64_image:
-                format, imgstr = base64_image.split(';base64,')
-                ext = format.split('/')[-1].split(';')[0]
-            else:
-                if base64_image.startswith('/9j/'): 
-                    ext = 'jpg'
-                elif base64_image.startswith('iVBORw0KGgo'): 
-                    ext = 'png'
-                else:
-                    return Response({
-                        "error": "Could not determine image format.",
-                        "code": "INVALID_FORMAT"
-                    }, status=status.HTTP_400_BAD_REQUEST)
-                imgstr = base64_image
-
-            if ext not in ['jpeg', 'jpg', 'png']:
-                return Response({
-                    "error": "Invalid image format. Only JPEG and PNG are supported.",
-                    "code": "UNSUPPORTED_FORMAT"
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-            imgstr += '=' * (-len(imgstr) % 4)
-            image_data = base64.b64decode(imgstr)
-
-            temp_filename = f"debug_{os.urandom(8).hex()}.{ext}"
-            temp_image_path = os.path.join(settings.MEDIA_ROOT, temp_filename)
-
-            with open(temp_image_path, 'wb') as f:
-                f.write(image_data)
-
-            try:
-                # Validate face in image
-                validation_result = face_recognition_service.validate_face_image(temp_image_path)
-                
-                return Response({
-                    "face_validation": validation_result,
-                    "image_path": temp_image_path
-                }, status=status.HTTP_200_OK)
-
-            finally:
-                # Cleanup temporary files
-                if os.path.exists(temp_image_path):
-                    try:
-                        os.remove(temp_image_path)
-                    except OSError as e:
-                        logger.warning(f"Error removing temp image {temp_image_path}: {e}")
-
-        except Exception as e:
-            logger.error(f"Error in face recognition debug view: {e}")
-            logger.error(traceback.format_exc())
-            return Response({
-                "error": "An unexpected error occurred during face validation.",
-                "code": "INTERNAL_ERROR"
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

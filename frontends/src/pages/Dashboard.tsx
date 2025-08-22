@@ -10,20 +10,27 @@ import { useQuery } from "@tanstack/react-query";
 
 
 const fetchDashboardData = async () => {
-  // Make the GET request to your backend endpoint
   const response = await api.get("/dashboard-data/");
-  // Return the data received from the backend
+  return response.data;
+};
+
+const fetchUserData = async () => {
+  const response = await api.get("/auth/users/me/");
   return response.data;
 };
 
 const Dashboard = () => {
-  // Use the useQuery hook
-  const { data, isLoading, isError, error } = useQuery({
-    queryKey: ['dashboardData'], // A unique key for this query
-    queryFn: fetchDashboardData, // The function that fetches the data
+  const { data: dashboardData, isLoading: isLoadingDashboard, isError: isErrorDashboard, error: errorDashboard } = useQuery({
+    queryKey: ['dashboardData'],
+    queryFn: fetchDashboardData,
   });
 
-  if (isLoading) {
+  const { data: userData, isLoading: isLoadingUser, isError: isErrorUser, error: errorUser } = useQuery({
+    queryKey: ['userData'],
+    queryFn: fetchUserData,
+  });
+
+  if (isLoadingDashboard || isLoadingUser) {
     return (
       <Layout> {/* Render within the layout */}
         <div className="flex items-center justify-center min-h-[calc(100vh-100px)]"> {/* Use Tailwind for centering */}
@@ -35,18 +42,17 @@ const Dashboard = () => {
     );
   }
 
-  // Display an error message if fetching failed
-  if (isError) {
+  if (isErrorDashboard || isErrorUser) {
     return (
-       <Layout> {/* Render within the layout */}
-        <div className="p-6"> {/* Add padding */}
-          <Alert variant="destructive"> {/* Assuming Alert component is available */}
-             <AlertTitle>Error</AlertTitle> {/* Assuming AlertTitle is available */}
-             <AlertDescription>
-               Failed to load dashboard data: {error.message || "An unknown error occurred."}
-             </AlertDescription>
+      <Layout>
+        <div className="p-6">
+          <Alert variant="destructive">
+            <AlertTitle>Error</AlertTitle>
+            <AlertDescription>
+              Failed to load dashboard data: {errorDashboard?.message || errorUser?.message || "An unknown error occurred."}
+            </AlertDescription>
           </Alert>
-           <p className="mt-4 text-forest-600">Please try again later or contact support.</p>
+          <p className="mt-4 text-forest-600">Please try again later or contact support.</p>
         </div>
       </Layout>
     );
@@ -61,7 +67,7 @@ const Dashboard = () => {
             <SidebarTrigger className="text-forest-700 hover:text-forest-900" />
             <div>
             <h1 className="text-2xl sm:text-3xl font-bold text-forest-900 animate-fade-in-up">Dashboard</h1>
-            <p className="text-sm sm:text-base text-forest-600 animate-fade-in-up">Welcome back, Professor Johnson</p>{/* TODO: Fetch and use actual user name */}
+            <p className="text-sm sm:text-base text-forest-600 animate-fade-in-up">Welcome back, {userData?.first_name} {userData?.last_name}</p>
             </div>
           </div>
           <div className="text-left sm:text-right animate-slide-in-right">
@@ -84,7 +90,7 @@ const Dashboard = () => {
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-forest-900">{data.stats.course_count}</div> {/* Display count from API */}
+                <div className="text-2xl font-bold text-forest-900">{dashboardData.stats.course_count}</div> {/* Display count from API */}
                 <p className="text-xs text-forest-600 mt-1">+X this period</p> {/* Placeholder for change if needed */}
               </CardContent>
             </Card>
@@ -98,7 +104,7 @@ const Dashboard = () => {
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-forest-900">{data.stats.student_count}</div> {/* Display count from API */}
+                <div className="text-2xl font-bold text-forest-900">{dashboardData.stats.student_count}</div> {/* Display count from API */}
                 <p className="text-xs text-forest-600 mt-1">+Y this period</p> {/* Placeholder for change if needed */}
               </CardContent>
             </Card>
@@ -150,16 +156,16 @@ const Dashboard = () => {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {/* Map over data.recent_attendance from the API */}
-                {data.recent_attendance.length > 0 ? (
-                     data.recent_attendance.map((activity, index) => (
+                {/* Map over dashboardData.recent_attendance from the API */}
+                {dashboardData.recent_attendance.length > 0 ? (
+                     dashboardData.recent_attendance.map((activity, index) => (
                         <div key={activity.id} className="flex items-center justify-between p-3 rounded-lg bg-white/50 hover:bg-white/70 transition-colors">
                           <div className="flex items-center space-x-3">
                             <div className="w-10 h-10 bg-forest-gradient rounded-lg flex items-center justify-center">
                               <BookOpen className="w-5 h-5 text-white" /> {/* Icon for the course/session */}
                             </div>
                             <div>
-                              {/* Display data from the API */}
+                              {/* Display dashboardData from the API */}
                               <p className="font-medium text-forest-900">{activity.course_name}</p> {/* From backend serializer */}
                               <p className="text-sm text-forest-600">{activity.student_name} • {new Date(activity.timestamp).toLocaleString()}</p> {/* From backend serializer */}
                             </div>

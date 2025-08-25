@@ -397,3 +397,12 @@ else:
     SESSION_COOKIE_AGE = 86400  # 24 hours
     SESSION_SAVE_EVERY_REQUEST = False
     SESSION_EXPIRE_AT_BROWSER_CLOSE = True
+# ==============================================================================
+# CACHE CONFIGURATION
+# ==============================================================================
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "api_cache_table",
+    }
+}    

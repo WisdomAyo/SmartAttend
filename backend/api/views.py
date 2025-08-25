@@ -18,6 +18,7 @@ from django.db.models import Count
 from django.db.models.functions import TruncDay
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
+from django.core.cache import cache
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -234,16 +235,44 @@ class CourseViewSet(viewsets.ModelViewSet):
             logger.error(f"Error getting course queryset for user {self.request.user.id}: {e}")
             return Course.objects.none()
 
+   
     def list(self, request, *args, **kwargs):
-        """Override list method to add error handling"""
-        try:
-            return super().list(request, *args, **kwargs)
-        except Exception as e:
-            logger.error(f"Error in CourseViewSet.list: {e}")
-            return Response(
-                {"error": "Failed to retrieve courses"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+        """
+        Override list method to add caching.
+        """
+        cache_key = "course_list"
+        cached_data = cache.get(cache_key)
+
+        if cached_data:
+            logger.info("Serving course list from cache.")
+            return Response(cached_data)
+
+        logger.info("Course list not in cache, fetching from DB.")
+        response = super().list(request, *args, **kwargs)
+        
+        if response.status_code == 200:
+            cache.set(cache_key, response.data, timeout=60 * 15)
+        
+        return response
+    
+    def retrieve(self, request, *args, **kwargs):
+        """
+        Override retrieve method to add caching for individual courses.
+        """
+        course_id = kwargs.get('pk')
+        cache_key = f"course_detail_{course_id}"
+        cached_data = cache.get(cache_key)
+
+        if cached_data:
+            logger.info(f"Serving course detail {course_id} from cache.")
+            return Response(cached_data)
+
+        logger.info(f"Course detail {course_id} not in cache, fetching from DB.")
+        response = super().retrieve(request, *args, **kwargs)
+
+        if response.status_code == 200:
+            cache.set(cache_key, response.data, timeout=60 * 15)
+
 
     def perform_create(self, serializer):
         """Assigns the currently logged-in user as the teacher."""

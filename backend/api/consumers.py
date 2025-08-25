@@ -140,130 +140,175 @@ class AttendanceConsumer(AsyncWebsocketConsumer):
     @sync_to_async
     def _run_recognition_in_thread(self, original_img: np.ndarray):
         """
-        FIXED: Improved face recognition with better image preprocessing and matching.
+        FINAL VERSION: Integrates smart tracking to skip already-recognized faces.
         """
         try:
-            # IMPROVED: Better image preprocessing
             processed_img = self._preprocess_image_for_recognition(original_img)
-            
-            # # Save processed image temporarily for DeepFace
-            # temp_img_path = os.path.join(settings.MEDIA_ROOT, f'temp_frame_{self.channel_name}.jpg')
-            # cv2.imwrite(temp_img_path, processed_img)
-            
-            # try:
-            # FIXED: Use more reliable DeepFace parameters
-            dfs = DeepFace.find(
-                img_path=processed_img, 
-                db_path=self.db_path, 
-                model_name=MODEL_NAME,
-                distance_metric=DISTANCE_METRIC, 
-                enforce_detection=False,  # Don't fail if no face detected
+
+            extracted_faces = DeepFace.extract_faces(
+                img_path=processed_img,
                 detector_backend='opencv',
-                silent=True,
-                threshold=RECOGNITION_THRESHOLD  # Use explicit threshold
+                enforce_detection=False
             )
 
             faces_for_frontend = []
             newly_confirmed_this_frame = []
 
-            if dfs and isinstance(dfs, list) and len(dfs) > 0:
-                for df in dfs:
-                    if df.empty:
-                        continue 
+            for face_data in extracted_faces:
+                face_image = face_data['face']
+                face_region = face_data['facial_area']
 
-                     # Get the best match
-                    best_match = df.iloc[0]
-                    
-                    # FIXED: More robust distance column handling
-                    distance = float('inf')
-                    distance_col_name = f"{MODEL_NAME}_{DISTANCE_METRIC}"
-                    
-                    if distance_col_name in df.columns:
-                        distance = best_match.get(distance_col_name, float('inf'))
-                    elif 'distance' in df.columns:
-                        distance = best_match.get('distance', float('inf'))
-                    else:
-                        logger.warning(f"Could not find a distance column in DeepFace results. Looked for '{distance_col_name}' and 'distance'. Available columns: {df.columns}")
-                        continue
-                    
-                    # FIXED: Better bounding box handling
+                # Step 1: Check if face is in an already confirmed location
+                if self._is_face_in_tracked_location(face_region):
+                    continue # Skip this face, it's already been confirmed
+
+                # Step 2: Assess face quality
+                if not self._is_face_high_quality(face_image, face_region):
+                    continue
+
+                # Step 3: Recognize the high-quality face
+                dfs = DeepFace.find(
+                    img_path=face_image,
+                    db_path=self.db_path,
+                    model_name=MODEL_NAME,
+                    distance_metric=DISTANCE_METRIC,
+                    enforce_detection=False,
+                    silent=True,
+                    threshold=RECOGNITION_THRESHOLD
+                )
+
+                if not (dfs and isinstance(dfs, list) and len(dfs) > 0 and not dfs[0].empty):
+                    continue
+
+                df = dfs[0]
+                best_match = df.iloc[0]
+                
+                distance = float('inf')
+                distance_col_name = f"{MODEL_NAME}_{DISTANCE_METRIC}"
+                
+                if distance_col_name in df.columns:
+                    distance = best_match.get(distance_col_name, float('inf'))
+                elif 'distance' in df.columns:
+                    distance = best_match.get('distance', float('inf'))
+                else:
+                    continue
+
+                box = {
+                    'source_x': int(face_region.get('x', 0)),
+                    'source_y': int(face_region.get('y', 0)),
+                    'source_w': int(face_region.get('w', 50)),
+                    'source_h': int(face_region.get('h', 50))
+                }
+                
+                result_data = {'box': box, 'name': 'Unknown', 'status': 'unknown'}
+
+                if distance <= RECOGNITION_THRESHOLD:
                     try:
-                        box = {
-                            'source_x': int(best_match.get('source_x', 0)),
-                            'source_y': int(best_match.get('source_y', 0)),
-                            'source_w': int(best_match.get('source_w', 50)),
-                            'source_h': int(best_match.get('source_h', 50))
-                        }
-                    except (ValueError, TypeError):
-                        # Fallback box if coordinates are invalid
-                        box = {'source_x': 0, 'source_y': 0, 'source_w': 50, 'source_h': 50}
-                    
-                    face_data = {
-                        'box': box, 
-                        'name': 'Unknown', 
-                        'status': 'unknown',
-                        'confidence': 1.0 - distance  # Convert distance to confidence
-                    }
-                    
-                    logger.info(f"Face detected with distance: {distance}, threshold: {RECOGNITION_THRESHOLD}")
-                    
-                    # FIXED: More lenient matching logic
-                    if distance <= RECOGNITION_THRESHOLD:  # Use <= instead of <
-                        try:
-                            identity_path = best_match['identity']
+                        identity_path = best_match['identity']
+                        filename = os.path.basename(identity_path)
+                        student_id_str = filename.split('_')[1].split('.')[0] if filename.startswith('student_') else filename.split('.')[0]
+                        student_id = int(student_id_str)
+                        
+                        student = Student.objects.get(id=student_id)
+                        result_data['name'] = f"{student.first_name} {student.last_name}".strip()
+                        
+                        if student_id in self.session_recognized_students:
+                            result_data['status'] = 'confirmed'
+                        else:
+                            current_sightings = self.session_sighting_counts.get(student_id, 0) + 1
+                            self.session_sighting_counts[student_id] = current_sightings
                             
-                            # IMPROVED: More robust student ID extraction
-                            filename = os.path.basename(identity_path)
-                            # Handle both formats: student_123.jpg and 123.jpg
-                            if filename.startswith('student_'):
-                                student_id_str = filename.split('_')[1].split('.')[0]
+                            if current_sightings >= SIGHTING_THRESHOLD:
+                                self.session_recognized_students.add(student_id)
+                                newly_confirmed_this_frame.append({'id': student.id, 'name': result_data['name']})
+                                result_data['status'] = 'confirmed'
+                                # NEW: Add the location of the newly confirmed face for tracking
+                                self.session_confirmed_face_locations.append(face_region)
                             else:
-                                student_id_str = filename.split('.')[0]
-                            
-                            student_id = int(student_id_str)
-                            
-                            # Get student from database
-                            student = Student.objects.get(id=student_id)
-                            face_data['name'] = f"{student.first_name} {student.last_name}".strip()
-                            
-                            if student_id in self.session_recognized_students:
-                                face_data['status'] = 'confirmed'
-                            else:
-                                # IMPROVED: More generous sighting logic
-                                current_sightings = self.session_sighting_counts.get(student_id, 0) + 1
-                                self.session_sighting_counts[student_id] = current_sightings
+                                result_data['status'] = 'sighted'
                                 
-                                logger.info(f"Student {student.first_name} sighted {current_sightings} times")
-                                
-                                if current_sightings >= SIGHTING_THRESHOLD:
-                                    self.session_recognized_students.add(student_id)
-                                    newly_confirmed_this_frame.append({
-                                        'id': student.id, 
-                                        'name': face_data['name'],
-                                        'confidence': face_data['confidence']
-                                    })
-                                    face_data['status'] = 'confirmed'
-                                    logger.info(f"Student {student.first_name} CONFIRMED for attendance")
-                                else:
-                                    face_data['status'] = 'sighted'
-                                    
-                        except (ValueError, IndexError, Student.DoesNotExist) as e:
-                            logger.warning(f"Error processing recognized face: {e}")
-                            face_data['name'] = 'Unknown Student'
-                            face_data['status'] = 'unknown'
-                    else:
-                        logger.info(f"Face distance {distance} exceeds threshold {RECOGNITION_THRESHOLD}")
-                    
-                    faces_for_frontend.append(face_data)
-            else:
-                logger.info("No faces detected in frame")
-            
+                    except (ValueError, IndexError, Student.DoesNotExist) as e:
+                        logger.warning(f"Error processing recognized face: {e}")
+                
+                faces_for_frontend.append(result_data)
+
             return faces_for_frontend, newly_confirmed_this_frame
-            
+
         except Exception as e:
             logger.error(f"Error in recognition thread: {e}", exc_info=True)
             return [], []
+        
+        
+    def _is_face_high_quality(self, face_image: np.ndarray, face_region: dict) -> bool:
+        """
+        NEW: Assesses if a detected face meets quality standards for recognition.
+        """
+        # --- Constants for Quality ---
+        MIN_FACE_RESOLUTION = 100  # Pixels
+        MIN_SHARPNESS = 100.0  # Unitless, based on Laplacian variance
+        MIN_BRIGHTNESS = 50  # 0-255
+        MAX_BRIGHTNESS = 200 # 0-255
+
+        # 1. Check Resolution
+        # The face_region from extract_faces gives 'w' and 'h'
+        if face_region['w'] < MIN_FACE_RESOLUTION or face_region['h'] < MIN_FACE_RESOLUTION:
+            logger.info(f"Skipping face due to low resolution: {face_region['w']}x{face_region['h']}")
+            return False
+
+        # 2. Check Sharpness (Blur)
+        gray_face = cv2.cvtColor(face_image, cv2.COLOR_BGR2GRAY)
+        sharpness = cv2.Laplacian(gray_face, cv2.CV_64F).var()
+        if sharpness < MIN_SHARPNESS:
+            logger.info(f"Skipping face due to blurriness. Sharpness: {sharpness:.2f}")
+            return False
+
+        # 3. Check Brightness
+        brightness = np.mean(gray_face)
+        if not (MIN_BRIGHTNESS < brightness < MAX_BRIGHTNESS):
+            logger.info(f"Skipping face due to poor brightness: {brightness:.2f}")
+            return False
+            
+        logger.info(f"Face passed quality checks. Resolution: {face_region['w']}x{face_region['h']}, Sharpness: {sharpness:.2f}, Brightness: {brightness:.2f}")
+        return True
     
+    
+    
+    def _calculate_iou(self, boxA, boxB):
+        """
+        logic that can tell if two bounding boxes on the screen are in the same location. 
+        This is done with a standard algorithm called 'Intersection over Union' (IoU).
+        """
+        # Determine the (x, y)-coordinates of the intersection rectangle
+        xA = max(boxA["x"], boxB["x"])
+        yA = max(boxA["y"], boxB["y"])
+        xB = min(boxA["x"] + boxA["w"], boxB["x"] + boxB["w"])
+        yB = min(boxA["y"] + boxA["h"], boxB["y"] + boxB["h"])
+
+        # Compute the area of intersection
+        interArea = max(0, xB - xA) * max(0, yB - yA)
+
+        # Compute the area of both the prediction and ground-truth rectangles
+        boxAArea = boxA["w"] * boxA["h"]
+        boxBArea = boxB["w"] * boxB["h"]
+
+        # Compute the intersection over union
+        iou = interArea / float(boxAArea + boxBArea - interArea)
+        
+        return iou
+
+    def _is_face_in_tracked_location(self, face_region: dict) -> bool:
+        """
+        NEW: Checks if a face region overlaps significantly with an already confirmed location.
+        """
+        IOU_THRESHOLD = 0.7 # High threshold to be confident it's the same location
+
+        for confirmed_box in self.session_confirmed_face_locations:
+            iou = self._calculate_iou(face_region, confirmed_box)
+            if iou > IOU_THRESHOLD:
+                logger.info(f"Skipping face as it overlaps with a confirmed location. IoU: {iou:.2f}")
+                return True
+        return False
+        
     def _preprocess_image_for_recognition(self, img):
         """
         IMPROVED: Better image preprocessing for more accurate face recognition.

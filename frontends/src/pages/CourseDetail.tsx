@@ -88,7 +88,7 @@ const CourseDetail = () => {
   // });
 
    // --- DATA FETCHING (Corrected) ---
-   const { data: course, isLoading, isError, error } = useQuery<BackendCourse>({
+   const { data: course, isLoading, isError, error, refetch } = useQuery<BackendCourse>({
     queryKey: ['course', courseId],
     queryFn: async () => (await api.get(`/courses/${courseId}/`)).data,
     enabled: !!courseId,
@@ -99,7 +99,13 @@ const CourseDetail = () => {
     // Fetch ALL students for the selection modal
     const { data: allStudents, isLoading: isLoadingStudents } = useQuery<BackendStudent[]>({
       queryKey: ['students'], // Use the same key as the main students page
-      queryFn: async () => (await api.get('/students/')).data,
+      queryFn: async () => {
+        const response = await api.get('/students/');
+        if (response.data && Array.isArray(response.data.results)){
+          return response.data.results;
+        } 
+        return response.data // Assume it's a raw array if no result
+      },
       staleTime: 1000 * 60 * 5,
     });
 
@@ -209,7 +215,7 @@ const CourseDetail = () => {
         <div className="p-6">
            <h1 className="text-xl font-bold text-red-600">Error Loading Course</h1>
            <p className="text-red-500">{(error as any).message || `Could not fetch course details for ID: ${courseId}.`}</p>
-           <Button onClick={() => refetchCourse()} className="mt-4">Retry</Button>
+           <Button onClick={() => refetch()} className="mt-4">Retry</Button>
         </div>
       </Layout>
     );

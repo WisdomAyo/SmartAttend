@@ -42,6 +42,7 @@ class AttendanceConsumer(AsyncWebsocketConsumer):
         # Session state
         self.session_recognized_students: Set[int] = set()
         self.session_sighting_counts: Dict[int, int] = {}
+        self.session_confirmed_face_locations: list = [] # <--- THIS IS THE FIX
         
         # Task queue and processing flag
         self.task_queue = asyncio.Queue(maxsize=1)
@@ -61,6 +62,8 @@ class AttendanceConsumer(AsyncWebsocketConsumer):
         
         await self.send_json({'type': 'session_ready'})
         logger.info(f"Attendance session started for course {self.course_id}")
+        
+        
 
     async def disconnect(self, close_code):
         """Handle disconnection and gracefully shut down the background task."""
@@ -241,35 +244,54 @@ class AttendanceConsumer(AsyncWebsocketConsumer):
         
     def _is_face_high_quality(self, face_image: np.ndarray, face_region: dict) -> bool:
         """
-        NEW: Assesses if a detected face meets quality standards for recognition.
+        REWRITTEN: Reads quality thresholds from settings for tunability.
         """
-        # --- Constants for Quality ---
-        MIN_FACE_RESOLUTION = 100  # Pixels
-        MIN_SHARPNESS = 100.0  # Unitless, based on Laplacian variance
-        MIN_BRIGHTNESS = 50  # 0-255
-        MAX_BRIGHTNESS = 200 # 0-255
+        # --- Read thresholds from Django settings, with sensible defaults ---
+        MIN_FACE_RESOLUTION = getattr(settings, 'QA_MIN_FACE_RESOLUTION', 80)
+        MIN_SHARPNESS = getattr(settings, 'QA_MIN_SHARPNESS', 50.0)
+        MIN_BRIGHTNESS = getattr(settings, 'QA_MIN_BRIGHTNESS', 40)
+        MAX_BRIGHTNESS = getattr(settings, 'QA_MAX_BRIGHTNESS', 210)
 
-        # 1. Check Resolution
-        # The face_region from extract_faces gives 'w' and 'h'
-        if face_region['w'] < MIN_FACE_RESOLUTION or face_region['h'] < MIN_FACE_RESOLUTION:
-            logger.info(f"Skipping face due to low resolution: {face_region['w']}x{face_region['h']}")
-            return False
+        try:
+            # 1. Check Resolution
+            if face_region['w'] < MIN_FACE_RESOLUTION or face_region['h'] < MIN_FACE_RESOLUTION:
+                logger.info(f"Skipping face due to low resolution: {face_region['w']}x{face_region['h']} (Threshold: {MIN_FACE_RESOLUTION})")
+                return False
 
-        # 2. Check Sharpness (Blur)
-        gray_face = cv2.cvtColor(face_image, cv2.COLOR_BGR2GRAY)
-        sharpness = cv2.Laplacian(gray_face, cv2.CV_64F).var()
-        if sharpness < MIN_SHARPNESS:
-            logger.info(f"Skipping face due to blurriness. Sharpness: {sharpness:.2f}")
-            return False
+            # 2. Convert image to uint8 format for processing
+            if face_image.dtype != np.uint8:
+                if face_image.dtype in [np.float32, np.float64]:
+                    face_image = (face_image * 255).astype(np.uint8)
+                else:
+                    face_image = face_image.astype(np.uint8)
 
-        # 3. Check Brightness
-        brightness = np.mean(gray_face)
-        if not (MIN_BRIGHTNESS < brightness < MAX_BRIGHTNESS):
-            logger.info(f"Skipping face due to poor brightness: {brightness:.2f}")
-            return False
+            # 3. Prepare grayscale image for checks
+            if len(face_image.shape) == 3 and face_image.shape[2] == 3:
+                gray_face = cv2.cvtColor(face_image, cv2.COLOR_BGR2GRAY)
+            elif len(face_image.shape) == 2:
+                gray_face = face_image
+            else:
+                logger.warning(f"Skipping face due to unexpected image shape: {face_image.shape}")
+                return False
+
+            # 4. Check Sharpness (Blur)
+            sharpness = cv2.Laplacian(gray_face, cv2.CV_64F).var()
+            if sharpness < MIN_SHARPNESS:
+                logger.info(f"Skipping face due to blurriness. Sharpness: {sharpness:.2f} (Threshold: {MIN_SHARPNESS})")
+                return False
+
+            # 5. Check Brightness
+            brightness = np.mean(gray_face)
+            if not (MIN_BRIGHTNESS < brightness < MAX_BRIGHTNESS):
+                logger.info(f"Skipping face due to poor brightness: {brightness:.2f} (Range: {MIN_BRIGHTNESS}-{MAX_BRIGHTNESS})")
+                return False
             
-        logger.info(f"Face passed quality checks. Resolution: {face_region['w']}x{face_region['h']}, Sharpness: {sharpness:.2f}, Brightness: {brightness:.2f}")
-        return True
+            logger.info(f"Face passed quality checks. Resolution: {face_region['w']}x{face_region['h']}, Sharpness: {sharpness:.2f}, Brightness: {brightness:.2f}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error during quality assessment: {e}", exc_info=True)
+            return False
     
     
     

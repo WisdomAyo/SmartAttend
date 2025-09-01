@@ -2,9 +2,6 @@ from django.db import models
 from django.contrib.auth.models import AbstractUser, BaseUserManager, PermissionsMixin
 from django.conf import settings # Needed for User foreign key if not using get_user_model
 from django.utils import timezone
-from django.db.models.signals import post_save, post_delete
-from django.dispatch import receiver
-from django.core.cache import cache
 from django.utils.translation import gettext_lazy as _ # Good practice for field names
 from .managers import CustomUserManager
 
@@ -129,31 +126,7 @@ class AttendanceRecord(models.Model):
     def __str__(self):
         return f"{self.student} in {self.course} at {self.timestamp.strftime('%Y-%m-%d %H:%M')}"
     
-    @receiver(post_save, sender=Course)
-    @receiver(post_delete, sender=Course)
-    def clear_course_cache(sender, instance, **kwargs):
-        """
-        Clears the cache for the course list and the specific course detail.
-        """
-        # Clear the list of all courses
-        cache.delete("course_list")
-        
-        # Clear the specific course detail
-        cache_key = f"course_detail_{instance.id}"
-        cache.delete(cache_key)
-        print(f"Cache cleared for course {instance.id}") # Using print for visibility
+    # --- Cache Invalidation Signals ---
+# These functions are defined at the module level, NOT inside a class.
 
-    @receiver(post_save, sender=Student)
-    @receiver(post_delete, sender=Student)
-    def clear_student_related_cache(sender, instance, **kwargs):
-        """
-        Clears the cache for any courses a student is enrolled in.
-        """
-        # Clear the list of all courses, as student counts might change
-        cache.delete("course_list")
-        
-        # Find all courses the student is enrolled in and clear their caches
-        for course in instance.courses.all():
-            cache_key = f"course_detail_{course.id}"
-            cache.delete(cache_key)
-            print(f"Cache cleared for course {course.id} due to student update.")
+   

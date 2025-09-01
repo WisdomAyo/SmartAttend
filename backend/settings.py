@@ -131,6 +131,10 @@ REST_FRAMEWORK = {
         'rest_framework.renderers.JSONRenderer',
         'rest_framework.renderers.BrowsableAPIRenderer',
     ],
+    
+     # Add our custom exception handler
+    'EXCEPTION_HANDLER': 'backend.api.exceptions.custom_exception_handler',
+    
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     # 'DEFAULT_PAGINATION_CLASS': None,
     'PAGE_SIZE': 20,
@@ -400,9 +404,17 @@ else:
 # ==============================================================================
 # CACHE CONFIGURATION
 # ==============================================================================
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
-        "LOCATION": "api_cache_table",
-    }
-}    
+# CACHES = {
+#     "default": {
+#         "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+#         "LOCATION": "api_cache_table",
+#     }
+# }   
+# ==============================================================================
+# QUALITY ASSESSMENT SETTINGS
+# ==============================================================================
+# You can tune these values based on your camera and lighting conditions.
+QA_MIN_FACE_RESOLUTION = 60  # Default: 100. Lower this if faces are far from the camera.
+QA_MIN_SHARPNESS = 30.0      # Default: 100. Lower this if the image is slightly blurry.
+QA_MIN_BRIGHTNESS = 40       # Default: 50. Lower this for darker rooms.
+QA_MAX_BRIGHTNESS = 210      # Default: 200. Increase this for brighter rooms. 
